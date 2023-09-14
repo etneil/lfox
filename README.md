@@ -1,8 +1,5 @@
 # lfox
 
-[![PyPI - Version](https://img.shields.io/pypi/v/lfox.svg)](https://pypi.org/project/lfox)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/lfox.svg)](https://pypi.org/project/lfox)
-
 -----
 
 **Table of Contents**
