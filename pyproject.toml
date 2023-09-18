@@ -27,6 +27,8 @@ classifiers = [
 dependencies = [
   "numpy>=1.25.2",
   "jax>=0.4.14",
+  "jaxlib>=0.4.14",
+  "jupyter",
 ]
 
 [project.urls]
