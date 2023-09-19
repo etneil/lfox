@@ -1,6 +1,7 @@
 import numpy as np
 from abc import ABC, abstractmethod
 import jax.numpy as jnp
+import jax
 
 class Lattice(ABC):
     
@@ -15,7 +16,6 @@ class Lattice(ABC):
     @abstractmethod
     def nn(self, dir):
         pass
-
 
 class SquareLattice(Lattice):
 
@@ -57,7 +57,7 @@ class HoneycombLattice(Lattice):
 # and https://jax.readthedocs.io/en/latest/pytrees.html#extending-pytrees ???
 class LatticeField:
 
-    def __init__(self, lattice, bc=None, dtype=float):
+    def __init__(self, lattice: Lattice, field=None, bc=None, dtype=float):
         self.lattice = lattice
         self.dtype = dtype
 
@@ -73,7 +73,54 @@ class LatticeField:
             self.bc = bc
 
         # Initialize the field
-        self.field = jnp.zeros(lattice.dims, dtype=self.dtype)
+        if field is None:
+            if hasattr(lattice, 'unit_cell'):
+                dims = lattice.dims + [ len(lattice.unit_cell) ]
+            else:
+                dims = lattice.dims
+            self.field = jnp.zeros(dims, dtype=self.dtype)
+        else:
+            self.field = field
+
+    def _tree_flatten(self):
+        children = (self.field,)
+        aux_data = {
+            'lattice': self.lattice,
+            'bc': self.bc,
+            'dtype': self.dtype,
+        }
+
+        return (children, aux_data)
+
+    @classmethod
+    def _tree_unflatten(cls, aux_data, children):
+        return cls(lattice=aux_data['lattice'], field=children[0], bc=aux_data['bc'], dtype=aux_data['dtype'])
+
+
+    def nn_field(self, axis, shift=1):
+        if axis == 0 and hasattr(self.lattice, 'unit_cell'):
+            # Deal with unit cell by rolling in extra dimension, too
+            nn_raw = jnp.roll(self.field, shift=shift, axis=0)
+            nn_raw = jnp.roll(nn_raw, shift=shift, axis=-1)
+        else:
+            nn_raw = jnp.roll(self.field, shift=shift, axis=axis)
+
+        # Apply boundary conditions
+        BC_factor = self.bc[axis]  # 1 or -1
+        coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in self.lattice.dims], indexing='ij')[axis]
+
+        _, winding = jnp.divmod(coords_ax+shift, self.lattice.dims[axis])
+        BC_field = (BC_factor)**(winding)
+
+        return nn_raw * BC_field
+
+
+
+
+
+
+
+        
 
     def nn(self, coords, dir, backwards=False):
         # Get nn from lattice
@@ -92,5 +139,12 @@ class LatticeField:
             for i in range(self.lattice.d, len(coords)):
                 new_C.append(nn_raw[i])
 
-        return new_C, BC_factor
+        return tuple(new_C), BC_factor
         return self.field[tuple(new_C)] * BC_factor
+    
+from jax import tree_util
+tree_util.register_pytree_node(
+    LatticeField,
+    LatticeField._tree_flatten,
+    LatticeField._tree_unflatten,
+)
