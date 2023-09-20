@@ -10,8 +10,10 @@ class Lattice(ABC):
         self.dims = dims
         self.d = len(dims)
 
-    # TODO: implement a function that will accept out-of-bounds indices,
-    # and appropriately apply boundary conditions.
+    # TODO: change this to a "shift" function, that will take an arbitrary
+    # array with dimensions matching self.dims and shift it appropriately.
+    # Boundary conditions to be applied within LatticeField objects
+    # (since two fields on the same lattice can have different BCs.)
 
     @abstractmethod
     def nn(self, dir):
@@ -52,9 +54,6 @@ class HoneycombLattice(Lattice):
         return (new_C)
 
 
-# So far, not working with JIT.
-# Look at rewriting using PyTrees, e.g. https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods
-# and https://jax.readthedocs.io/en/latest/pytrees.html#extending-pytrees ???
 class LatticeField:
 
     def __init__(self, lattice: Lattice, field=None, bc=None, dtype=float):
