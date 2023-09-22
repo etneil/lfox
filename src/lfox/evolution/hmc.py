@@ -50,10 +50,16 @@ class VerletIntegrator():
             P = p_update(X, P, self.eps)
             X = x_update(X, P, self.eps/2.)
 
+        return X, P
+
 class HMCEvolver(Evolver):
 
     def __init__(self, fields, action, params, seed, observables=None):
         self.integrator = params['integrator']
+        self.monitor = {
+            'delta_H': [],
+            'P_acc': [],
+        }
         super().__init__(fields=fields, action=action, params=params, seed=seed, observables=observables)
 
     def H(self):
@@ -71,34 +77,64 @@ class HMCEvolver(Evolver):
     @staticmethod
     @jax.jit
     def mom_update(phi, pi, eps):
-        return phi + eps * pi
+        pi_update = []
+        for i in range(len(phi)):
+            pi_update.append(phi[i] + eps * pi[i])
+
+        return pi_update
 
     @staticmethod
     @jax.jit
-    def field_update(i, phi, pi, eps):
-        delta_pi = self.forces[i](*self.fields)
-        return self.pi_fields[i] - eps * delta_pi
+    def field_update(phi, pi, eps, force):
+        delta_pi = force(phi)
+        phi_update = []
+        for i in range(len(phi)):
+            phi_update.append(pi[i] - eps * delta_pi[i])
+
+        return phi_update
 
     def register_action(self, action):
         self.action = action
         self.force = jax.grad(self.action)
+
+    def copy_fields(self):
+        copies = []
+        for i in range(self.N_fields):
+            copies.append(jnp.copy(self.fields[i]))
+        return copies
+
 
     def evolve(self):
         # Heatbath momentum refresh
         self.mom_refresh()
 
         # Store old field values
-        prev_fields = []
-        for i in range(self.N_fields):
-            prev_fields.append(jnp.copy(self.fields[i]))
+        prev_fields = self.copy_fields()
+        H_old = self.H()
 
         # Integrate the trajectory
-        self.integrator.integrate()
+        self.fields, self.pi_fields = self.integrator.integrate(
+            x_update = self.mom_update,
+            p_update = lambda X, P, eps: self.field_update(X, P, eps, self.forces),
+            X = self.fields,
+            P = self.pi_fields,
+        )
 
+        # Accept/reject
+        H_new = self.H()
+        delta_H = H_new - H_old
+        P_acc = jnp.exp(-delta_H)
 
+        self.monitor['delta_H'].append(delta_H)
+        self.monitor['P_acc'].append(P_acc)
 
+        if P_acc < 1:
+            self.rng_key, subkey = jax.random.split(self.rng_key)
+            r = jax.random.uniform(subkey)
+            if r > P_acc:
+                self.fields = prev_fields
 
-        # Measure observables
+        # Measure observables (TODO)
 
 
 
