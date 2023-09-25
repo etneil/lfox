@@ -245,12 +245,15 @@ class HMCEvolver(Evolver):
         self.field_names = list(action.fields.keys())
         self.field_chain = { fname: [] for fname in self.field_names }
 
-
         # No need to initialize momentum fields yet - will happen
         # when the evolution starts
         self.pi_fields = None
 
         super().__init__(action=action, seed=seed, observables=observables)
+
+        # Avoid recreating delta functions unnecessarily
+        self.make_deltas()
+
 
     def H(self):
         KE_sum = 0.0
@@ -288,6 +291,10 @@ class HMCEvolver(Evolver):
     
         return delta_X
 
+    def make_deltas(self):
+        self.delta_P = self.delta_mom()
+        self.delta_X = self.delta_fields()
+
     def evolve(self, warmup=False):
         # Heatbath momentum refresh
         self.mom_refresh()
@@ -298,8 +305,8 @@ class HMCEvolver(Evolver):
 
         # Integrate the trajectory
         self.action.fields, self.pi_fields = self.integrator.integrate(
-            delta_X = self.delta_fields(),
-            delta_P = self.delta_mom(),
+            delta_X = self.delta_X,
+            delta_P = self.delta_P,
             X = self.action.fields,
             P = self.pi_fields,
         )
