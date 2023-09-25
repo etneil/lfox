@@ -172,6 +172,8 @@ class LatticeField:
 
     # TODO: more arithmetic
 
+    # JIT compiling this didn't seem useful in initial tests, at least as written...
+    #@partial(jax.jit, static_argnums=(1,))
     def nn_field(self, axis, shift=1):
         nn_shift = self.lattice.shift(self.field, axis=axis, shift=shift)
 

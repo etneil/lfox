@@ -3,6 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import inspect
+import numpy as np
 
 class Evolver(ABC):
     # Any (MCMC) evolver needs:
@@ -224,23 +225,27 @@ class LeapfrogIntegrator():
         self.traj_length = eps * Nstep
 
     @staticmethod
+    @jax.jit
     def update(fields, delta, dt):
+        new_fields = {}
         for fname in fields.keys():
-            fields[fname] += dt * delta[fname]
+            new_fields[fname] = fields[fname] + dt * delta[fname]
+
+        return new_fields
 
     @partial(jax.jit, static_argnums=(0,1,2))
     def integrate(self, delta_X, delta_P, X, P):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
         # All fields are modified in place.
-        self.update(X, delta_X(X,P), self.eps/2.)
-        self.update(P, delta_P(X,P), self.eps)
+        X = self.update(X, delta_X(X,P), self.eps/2.)
+        P = self.update(P, delta_P(X,P), self.eps)
 
         for _ in range(self.Nstep-1):
-            self.update(X, delta_X(X,P), self.eps)
-            self.update(P, delta_P(X,P), self.eps)
+            X = self.update(X, delta_X(X,P), self.eps)
+            P = self.update(P, delta_P(X,P), self.eps)
         
-        self.update(X, delta_X(X,P), self.eps/2.)
+        X = self.update(X, delta_X(X,P), self.eps/2.)
 
         return X, P
 
@@ -261,7 +266,7 @@ class HMCEvolver(Evolver):
 
         # No need to initialize momentum fields yet - will happen
         # when the evolution starts
-        self.pi_fields = None
+        self.pi_fields = {}
 
         super().__init__(action=action, seed=seed, observables=observables)
 
@@ -270,22 +275,40 @@ class HMCEvolver(Evolver):
 
 
     def H(self):
-        KE_sum = 0.0
-        for fname in self.field_names:
-            field = self.pi_fields[fname].field
-            KE_sum += jnp.sum(field**2)
+        pi_list = [ pi.field for pi in self.pi_fields.values() ]
+        KE = self._KE(pi_list)
+        return KE + self.action.S()
 
-        return 0.5 * KE_sum + self.action.S()
+    @staticmethod
+    @jax.jit
+    def _KE(pi_fields):
+        KE_sum = 0.0
+        for pi in pi_fields:
+            KE_sum += jnp.sum(pi**2)
+        
+        return 0.5 * KE_sum
 
     def mom_refresh(self):
-        if self.pi_fields is None:
-            self.pi_fields = {}
-
+        # Refactor to try to speed up a bit...
         for fname in self.field_names:
-            self.rng_key, subkey = jax.random.split(self.rng_key)
-            fresh_pi = jax.random.normal(subkey, shape=self.action.fields[fname].field.shape)
-            self.pi_fields[fname] = self.action.fields[fname].copy()
+            if self.pi_fields.get(fname) is None:
+                self.pi_fields[fname] = self.action.fields[fname].copy()
+
+            self.rng_key, fresh_pi = self._mom_heatbath(self.pi_fields[fname].field.shape, self.rng_key)
             self.pi_fields[fname].field = fresh_pi
+
+#        for fname in self.field_names:
+#            self.rng_key, subkey = jax.random.split(self.rng_key)
+#            fresh_pi = jax.random.normal(subkey, shape=self.action.fields[fname].field.shape)
+#            if self.pi_fields.get(fname) is None:
+#                self.pi_fields[fname] = self.action.fields[fname].copy()
+#            self.pi_fields[fname].field = fresh_pi
+
+    @staticmethod
+    @partial(jax.jit, static_argnums=(0,))
+    def _mom_heatbath(shape, key):
+        key, subkey = jax.random.split(key)
+        return key, jax.random.normal(subkey, shape=shape)
     
     # Produce an MD integrator-compatible function
     def delta_mom(self):
@@ -328,7 +351,7 @@ class HMCEvolver(Evolver):
         # Accept/reject
         H_new = self.H()
         delta_H = H_new - H_old
-        P_acc = jnp.exp(-delta_H)
+        P_acc = np.exp(-delta_H)
 
         self.monitor['delta_H'].append(delta_H)
         self.monitor['P_acc'].append(P_acc)
