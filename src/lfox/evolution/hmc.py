@@ -1,41 +1,113 @@
 from abc import ABC, abstractmethod
+from functools import partial
 import jax
 import jax.numpy as jnp
+import inspect
 
 class Evolver(ABC):
     # Any (MCMC) evolver needs:
-    # - A list of lattice fields to be evolved
-    # - An action, which is a function of the fields
-    # - A dictionary of observables to measure, with measurement frequencies
-    # - A dictionary of evolution parameters: integrators/solvers, hyperparameters, etc.
-    # - An RNG seed
+    # - An action object, which contains the action functional, the set of fields
+    #   to be evolved, and other key auxiliary information
+    # - A dictionary of observables to measure, along with measurement frequencies,
+    #   in the form:  { 'obs_name': [obs_function, 10] }
+    # - An RNG seed.  Note that this always shows the INITIAL seed value used;
+    #   the evolving JAX RNG key is saved in the `rng_key` property.
+
+    # Any other hyperparameters for evolution (integrators etc.) should be properties
+    # of concrete implementations which inherit from Evolver.
     
     # Properties it should have:
     # - A Markov chain (before evolution, just the initial
     # field configuration lives here)
     # - A dict of lists of observable measurements (paired with configuration #s)
 
-    # Should accommodate, to start: 
+    # Should be general enough to accommodate: 
     # - HMC
     # - Heatbath/OR
     # - Cluster algorithms
 
-    def __init__(self, fields, action, params, seed, observables=None):
-        self.fields = fields
-        self.register_action(action)
+    def __init__(self, action, seed, observables=None):
+        self.action = action
+        self.seed = seed
+        self.rng_key = jax.random.PRNGKey(self.seed)
 
         self.observables = observables
-        self.params = params
 
-        self.seed = seed
+        self.N_fields = len(self.action.fields)
 
-        self.rng_key = jax.random.PRNGKey(self.seed)
-        self.N_fields = len(self.fields)
+    @abstractmethod
+    def evolve(self):
+        pass
 
-    def register_action(self, action):
-        self.action = action
 
-class VerletIntegrator():
+
+class Action():
+    # An action needs the following to be created:
+    # - A dictionary of lattice fields
+    # - [optional] A dictionary of non-field parameters the action depends on (e.g. couplings)
+
+    # The action functional _S should depend on the fields and parameters, and
+    # should be implemented by any inheriting subclass.
+
+    # Actions can be created by combining two actions together using += or +.
+    # This uses the sub_actions parameter.
+
+    def __init__(self, fields, params=None):
+        self.fields = fields
+
+        if params is None:
+            self.params = {}
+        else:
+            self.params = params
+
+        self.sub_actions = []
+
+    # Action functional
+    def S(self):
+        S_tot = 0.0
+
+        # Evaluate main action functional
+        S_tot += self._S()
+
+        # Add action functionals for any subclasses
+        for action in self.sub_actions:
+            S_tot += action._S()
+
+        return S_tot
+
+    def _S(self):
+        # This method should be overloaded by concrete actions!
+        return 0.0
+
+    # Overload addition with composition
+    def __iadd__(self, other):
+        self.add_subaction(other)
+        return None
+    
+    def __add__(self, other):
+        newAct = self.copy()
+        newAct.add_subaction(other)
+
+        return newAct
+    
+    def add_subaction(self, other):
+        # Combine the fields; in case of name collision, make sure they are really the same field!
+        for field_name in other.fields.keys():
+            if self.fields.get(field_name) is not None:
+                assert self.fields[field_name] is other.fields[field_name]
+            
+            self.fields[field_name] = other.fields[field_name]
+        
+        # Combine the parameters
+        self.params.update(other.params)
+
+        # Register the subaction
+        self.sub_actions.append(other)
+
+
+
+
+class LeapfrogIntegrator():
 
     def __init__(self, eps, Nstep):
         self.eps = eps
@@ -43,80 +115,93 @@ class VerletIntegrator():
         
         self.traj_length = eps * Nstep
 
-    @jax.jit
-    def integrate(self, x_update, p_update, X, P):
-        for _ in range(self.Nstep):
-            X = x_update(X, P, self.eps/2.)
-            P = p_update(X, P, self.eps)
-            X = x_update(X, P, self.eps/2.)
+    @staticmethod
+    def update(fields, delta, dt):
+        for fname in fields.keys():
+            fields[fname] += dt * delta[fname]
 
-        return X, P
+    @partial(jax.jit, static_argnums=(0,1,2))
+    def integrate(self, delta_X, delta_P, X, P):
+        # Note that X and P should both be dictionaries
+        # of fields (like in Action()) with matching keys.
+        # All fields are modified in place.
+
+        self.update(X, delta_X(X,P), self.eps/2.)
+        self.update(P, delta_P(X,P), self.eps)
+
+        for _ in range(self.Nstep-1):
+            self.update(X, delta_X(X,P), self.eps)
+            self.update(P, delta_P(X,P), self.eps)
+        
+        self.update(X, delta_X(X,P), self.eps/2.)
+
+        return
+
+
 
 class HMCEvolver(Evolver):
 
-    def __init__(self, fields, action, params, seed, observables=None):
-        self.integrator = params['integrator']
+    def __init__(self, action, seed, integrator, observables=None):
+        self.integrator = integrator
         self.monitor = {
             'delta_H': [],
             'P_acc': [],
         }
-        super().__init__(fields=fields, action=action, params=params, seed=seed, observables=observables)
+
+        self.field_names = list(action.fields.keys())
+        self.field_chain = { fname: [] for fname in self.field_names }
+
+
+        # No need to initialize momentum fields yet - will happen
+        # when the evolution starts
+        self.pi_fields = None
+
+        super().__init__(action=action, seed=seed, observables=observables)
 
     def H(self):
-        pi_sum = 0.0
-        for pi in self.pi_fields:
-            pi_sum += jnp.sum(pi)
+        KE_sum = 0.0
+        for field in self.field_names:
+            KE_sum += jnp.sum(field*field)
 
-        return 0.5 * pi_sum + self.action(*self.fields)
+        return 0.5 * KE_sum + self.action.S()
 
     def mom_refresh(self):
-        for i in range(self.N_fields):
+        if self.pi_fields is None:
+            self.pi_fields = {}
+
+        for fname in self.field_names:
             self.rng_key, subkey = jax.random.split(self.rng_key)
-            self.pi_fields[i] = jax.random.normal(subkey, shape=self.fields[i].shape)
+            self.pi_fields[fname] = jax.random.normal(subkey, shape=self.action.fields[fname].field.shape)
     
-    @staticmethod
-    @jax.jit
-    def mom_update(phi, pi, eps):
-        pi_update = []
-        for i in range(len(phi)):
-            pi_update.append(phi[i] + eps * pi[i])
+    # Produce an MD integrator-compatible function
+    def delta_mom(self):
+        F = self.action.forces
+        def delta_P(X, P):
+            result = {}
+            for field in self.field_names:
+                result[field] = F(X)[field]
+        
+        return delta_P
 
-        return pi_update
-
-    @staticmethod
-    @jax.jit
-    def field_update(phi, pi, eps, force):
-        delta_pi = force(phi)
-        phi_update = []
-        for i in range(len(phi)):
-            phi_update.append(pi[i] - eps * delta_pi[i])
-
-        return phi_update
-
-    def register_action(self, action):
-        self.action = action
-        self.force = jax.grad(self.action)
-
-    def copy_fields(self):
-        copies = []
-        for i in range(self.N_fields):
-            copies.append(jnp.copy(self.fields[i]))
-        return copies
-
+    def delta_fields(self):
+        def delta_X(X, P):
+            return P
+    
+        return delta_X
 
     def evolve(self):
         # Heatbath momentum refresh
         self.mom_refresh()
 
         # Store old field values
-        prev_fields = self.copy_fields()
+        prev_action = self.action.copy()
         H_old = self.H()
 
         # Integrate the trajectory
-        self.fields, self.pi_fields = self.integrator.integrate(
-            x_update = self.mom_update,
-            p_update = lambda X, P, eps: self.field_update(X, P, eps, self.forces),
-            X = self.fields,
+        self.integrator.integrate(
+            delta_X = self.delta_fields(),
+            delta_P = self.delta_mom(),
+            X = self.action.fields,
             P = self.pi_fields,
         )
 
@@ -132,7 +217,10 @@ class HMCEvolver(Evolver):
             self.rng_key, subkey = jax.random.split(self.rng_key)
             r = jax.random.uniform(subkey)
             if r > P_acc:
-                self.fields = prev_fields
+                self.action.fields = prev_action.fields
+        
+        for fname in self.field_names:
+            self.field_chain[fname].append(self.action.fields[fname])
 
         # Measure observables (TODO)
 

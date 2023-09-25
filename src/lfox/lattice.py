@@ -2,6 +2,8 @@ import numpy as np
 from abc import ABC, abstractmethod
 import jax.numpy as jnp
 import jax
+from jax import tree_util
+from functools import partial
 
 class Lattice(ABC):
     
@@ -10,27 +12,35 @@ class Lattice(ABC):
         self.dims = dims
         self.d = len(dims)
 
-    # TODO: change this to a "shift" function, that will take an arbitrary
+    # "Shift" function, that will take an arbitrary
     # array with dimensions matching self.dims and shift it appropriately.
     # Boundary conditions to be applied within LatticeField objects
     # (since two fields on the same lattice can have different BCs.)
-
     @abstractmethod
-    def nn(self, dir):
+    def shift(self, field, axis, shift=1):
         pass
+
+    def _tree_flatten(self):
+        children = (self.dims,)
+        aux_data = {}
+
+        return (children, aux_data)
+
+    @classmethod
+    def _tree_unflatten(cls, aux_data, children):
+        return cls(dims=children[0])
+
+tree_util.register_pytree_node(
+    Lattice,
+    Lattice._tree_flatten,
+    Lattice._tree_unflatten,
+)
 
 class SquareLattice(Lattice):
 
-    def nn(self, coords, dir, backwards=False):
-        assert len(coords) == self.d
-        disp = -1 if backwards else 1
-
-        new_C = []
-        for ax, C in enumerate(coords):
-            new_C.append(C+disp if ax == dir else C)
-        
-        return (new_C)
-
+    def shift(self, field, axis, shift=1):
+        return jnp.roll(field, shift=shift, axis=axis)
+    
 class HoneycombLattice(Lattice):
 
     def __init__(self, dims):
@@ -41,17 +51,19 @@ class HoneycombLattice(Lattice):
         self.unit_cell = [0, 1]
         super().__init__(dims=dims)
 
-    def nn(self, coords, dir, backwards=False):
-        assert len(coords) == self.d + 1
-        disp = -1 if backwards else 1
-        new_unit = (coords[-1] + 1) % 2
 
-        new_C = []
-        for ax, C in enumerate(coords):
-            new_C.append(C+disp if ax == dir else C)
-        new_C.append(new_unit)
-
-        return (new_C)
+    def shift(self, field, axis, shift=1):
+        # Shift within the unit cell too if we are moving in axis 0
+        if axis == 0:
+            shift_field = jnp.roll(field, shift=shift, axis=-1)
+            # FIXME: THIS IS WRONG, figure out the correct way to do this
+            # (Only sites which are now on unit cell position 0 should be
+            # rolled in x.)
+            shift_field = jnp.roll(shift_field, shift=shift, axis=0)
+            return shift_field
+        else:
+            # Other axes shift normally
+            return jnp.roll(field, shift=shift, axis=axis)
 
 
 class LatticeField:
@@ -96,31 +108,39 @@ class LatticeField:
         return cls(lattice=aux_data['lattice'], field=children[0], bc=aux_data['bc'], dtype=aux_data['dtype'])
 
 
-    def nn_field(self, axis, shift=1):
-        if axis == 0 and hasattr(self.lattice, 'unit_cell'):
-            # Deal with unit cell by rolling in extra dimension, too
-            nn_raw = jnp.roll(self.field, shift=shift, axis=0)
-            nn_raw = jnp.roll(nn_raw, shift=shift, axis=-1)
-        else:
-            nn_raw = jnp.roll(self.field, shift=shift, axis=axis)
+    # Arithmetic with fields - pass through to the field array
+    def __add__(self, other):
+        new_field = self.copy()
+        new_field.field = self.field + other.field
 
-        # Apply boundary conditions
+        return new_field
+    
+    def __iadd__(self, other):
+        self.field += other.field
+
+    def __mul__(self, other):
+        new_field = self.copy()
+        new_field.field = self.field * other.field
+        return new_field
+    
+    def __imul__(self, other):
+        self.field *= other.field
+
+    # TODO: more arithmetic
+
+    def nn_field(self, axis, shift=1):
+        nn_shift = self.lattice.shift(self.field, axis=axis, shift=shift)
+
+        # Apply boundary conditions globally with some arcane NumPy manipulations
         BC_factor = self.bc[axis]  # 1 or -1
         coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in self.lattice.dims], indexing='ij')[axis]
 
         _, winding = jnp.divmod(coords_ax+shift, self.lattice.dims[axis])
         BC_field = (BC_factor)**(winding)
 
-        return nn_raw * BC_field
+        return nn_shift * BC_field
 
-
-
-
-
-
-
-        
-
+    # Legacy function; will probably be removed in later version.
     def nn(self, coords, dir, backwards=False):
         # Get nn from lattice
         nn_raw = self.lattice.nn(coords, dir, backwards=backwards)
@@ -139,9 +159,7 @@ class LatticeField:
                 new_C.append(nn_raw[i])
 
         return tuple(new_C), BC_factor
-        return self.field[tuple(new_C)] * BC_factor
     
-from jax import tree_util
 tree_util.register_pytree_node(
     LatticeField,
     LatticeField._tree_flatten,
