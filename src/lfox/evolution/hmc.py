@@ -41,7 +41,7 @@ class Evolver(ABC):
 
 
 
-class Action():
+class Action(ABC):
     # An action needs the following to be created:
     # - A dictionary of lattice fields
     # - [optional] A dictionary of non-field parameters the action depends on (e.g. couplings)
@@ -61,6 +61,7 @@ class Action():
             self.params = params
 
         self.sub_actions = []
+        self.forces = None
 
     # Action functional
     def S(self):
@@ -75,8 +76,82 @@ class Action():
 
         return S_tot
 
+    def get_forces(self, recompute=False):
+        if recompute or self.forces == None:
+            self._compute_forces()
+
+        return self.forces
+
+    @staticmethod
+    def _safe_call(F, dicts):
+        F_sig = inspect.signature(F)
+
+        call = {}
+        for D in dicts:
+            for k in D.keys():
+                if k in F_sig.parameters:
+                    call[k] = D[k]
+        return F(**call)
+
+    def _compute_forces(self):
+        action_sig = inspect.signature(self._Sjax)
+        action_pars = list(action_sig.parameters)
+
+        grads = {}
+        for fname in self.fields.keys():
+            grads[fname] = []
+
+            # Compute gradient of total action with respect to each field
+            # Start with the main action
+            field_i = action_pars.index(fname)
+            grads[fname].append(jax.grad(self._Sjax, argnums=field_i))
+
+            for subact in self.sub_actions:
+                subact_pars = list(inspect.signature(subact._Sjax).parameters)
+                field_i = subact_pars.index(fname)
+                grads[fname].append(jax.grad(subact._Sjax, argnums=field_i))
+
+        # Combine into a single function that returns a dictionary matching self.fields
+        def force_func(fields):
+            forces = {}
+            for fname in fields.keys():
+                total_force = []
+                for G in grads[fname]:
+                    total_force.append(self._safe_call(G, (fields, self.params)))
+
+                forces[fname] = sum(total_force)
+
+            return forces
+
+        self.forces = force_func
+
+
     def _S(self):
-        # This method should be overloaded by concrete actions!
+        # This method interfaces to a function which can be JIT compiled and which is friendly
+        # to computing JAX gradients.
+        # Call signature (fields and params) MUST match the names
+        # in the dictionaries.
+        # This is meant to be maximally flexible; can always be overridden to be more efficient
+        # by a subclass.
+
+        action_sig = inspect.signature(self._Sjax)
+
+        return self._safe_call(self._Sjax, (self.fields, self.params))
+    
+        call = {}
+        for k in self.fields.keys():
+            if k in action_sig.parameters:
+                call[k] = self.fields[k]
+        for k in self.params.keys():
+            if k in action_sig.parameters:
+                call[k] = self.params[k]
+
+        return self._Sjax(**call)
+
+
+    @staticmethod
+    @abstractmethod
+    def _Sjax():
         return 0.0
 
     # Overload addition with composition
@@ -113,6 +188,13 @@ class Action():
         # Combine the parameters
         self.params.update(other.params)
 
+        # If there are subactions within the other field, promote them up to the current subaction list
+        if len(other.sub_actions) > 0:
+            for subact in other.sub_actions:
+                self.sub_actions.append(subact)
+            
+            other.sub_actions = []
+
         # Register the subaction
         self.sub_actions.append(other)
 
@@ -147,7 +229,7 @@ class LeapfrogIntegrator():
         
         self.update(X, delta_X(X,P), self.eps/2.)
 
-        return
+        return X, P
 
 
 
@@ -173,7 +255,7 @@ class HMCEvolver(Evolver):
     def H(self):
         KE_sum = 0.0
         for fname in self.field_names:
-            field = self.pi_fields[fname]
+            field = self.pi_fields[fname].field
             KE_sum += jnp.sum(field**2)
 
         return 0.5 * KE_sum + self.action.S()
@@ -184,15 +266,19 @@ class HMCEvolver(Evolver):
 
         for fname in self.field_names:
             self.rng_key, subkey = jax.random.split(self.rng_key)
-            self.pi_fields[fname] = jax.random.normal(subkey, shape=self.action.fields[fname].field.shape)
+            fresh_pi = jax.random.normal(subkey, shape=self.action.fields[fname].field.shape)
+            self.pi_fields[fname] = self.action.fields[fname].copy()
+            self.pi_fields[fname].field = fresh_pi
     
     # Produce an MD integrator-compatible function
     def delta_mom(self):
-        F = self.action.forces
+        F = self.action.get_forces()
         def delta_P(X, P):
             result = {}
             for field in self.field_names:
-                result[field] = F(X)[field]
+                result[field] = -1 * F(X)[field]
+
+            return result
         
         return delta_P
 
@@ -202,7 +288,7 @@ class HMCEvolver(Evolver):
     
         return delta_X
 
-    def evolve(self):
+    def evolve(self, warmup=False):
         # Heatbath momentum refresh
         self.mom_refresh()
 
@@ -211,7 +297,7 @@ class HMCEvolver(Evolver):
         H_old = self.H()
 
         # Integrate the trajectory
-        self.integrator.integrate(
+        self.action.fields, self.pi_fields = self.integrator.integrate(
             delta_X = self.delta_fields(),
             delta_P = self.delta_mom(),
             X = self.action.fields,
@@ -226,11 +312,12 @@ class HMCEvolver(Evolver):
         self.monitor['delta_H'].append(delta_H)
         self.monitor['P_acc'].append(P_acc)
 
-        if P_acc < 1:
-            self.rng_key, subkey = jax.random.split(self.rng_key)
-            r = jax.random.uniform(subkey)
-            if r > P_acc:
-                self.action.fields = prev_action.fields
+        if not warmup:
+            if P_acc < 1:
+                self.rng_key, subkey = jax.random.split(self.rng_key)
+                r = jax.random.uniform(subkey)
+                if r > P_acc:
+                    self.action.fields = prev_action.fields
         
         for fname in self.field_names:
             self.field_chain[fname].append(self.action.fields[fname])

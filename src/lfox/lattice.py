@@ -137,6 +137,7 @@ class LatticeField:
     
     def __iadd__(self, other):
         self.field += other.field
+        return self
 
     def __mul__(self, other):
         new_field = self.__copy__()
@@ -154,6 +155,8 @@ class LatticeField:
         else:
             self.field *= other
 
+        return self
+
     def __rmul__(self, other):
         return self * other
 
@@ -165,6 +168,7 @@ class LatticeField:
     
     def __ipow__(self, power):
         self.field **= power
+        return self
 
     # TODO: more arithmetic
 
