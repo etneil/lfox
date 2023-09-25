@@ -85,11 +85,23 @@ class Action():
         return None
     
     def __add__(self, other):
-        newAct = self.copy()
+        newAct = self.__copy__()
         newAct.add_subaction(other)
 
         return newAct
     
+    def __copy__(self):
+        cls = self.__class__
+        new = cls.__new__(cls)
+        new.__dict__.update(self.__dict__)
+        for fname in self.fields.keys():
+            new.fields[fname] = self.fields[fname].copy()
+        
+        return new
+
+    def copy(self):
+        return self.__copy__()
+
     def add_subaction(self, other):
         # Combine the fields; in case of name collision, make sure they are really the same field!
         for field_name in other.fields.keys():
@@ -160,8 +172,9 @@ class HMCEvolver(Evolver):
 
     def H(self):
         KE_sum = 0.0
-        for field in self.field_names:
-            KE_sum += jnp.sum(field*field)
+        for fname in self.field_names:
+            field = self.pi_fields[fname]
+            KE_sum += jnp.sum(field**2)
 
         return 0.5 * KE_sum + self.action.S()
 

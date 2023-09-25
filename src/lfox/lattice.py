@@ -123,6 +123,9 @@ class LatticeField:
         new.field = jnp.copy(self.field)
 
         return new
+    
+    def copy(self):
+        return self.__copy__()
 
 
     # Arithmetic with fields - pass through to the field array
@@ -153,6 +156,15 @@ class LatticeField:
 
     def __rmul__(self, other):
         return self * other
+
+    def __pow__(self, power):
+        new_field = self.__copy__()
+        new_field.field = self.field ** power
+
+        return new_field
+    
+    def __ipow__(self, power):
+        self.field **= power
 
     # TODO: more arithmetic
 
