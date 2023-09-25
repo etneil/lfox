@@ -176,6 +176,13 @@ class Action(ABC):
 
     def copy(self):
         return self.__copy__()
+    
+    def copy_fields(self):
+        new_fields = {}
+        for fname in self.fields.keys():
+            new_fields[fname] = self.fields[fname].copy()
+
+        return new_fields
 
     def add_subaction(self, other):
         # Combine the fields; in case of name collision, make sure they are really the same field!
@@ -219,7 +226,6 @@ class LeapfrogIntegrator():
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
         # All fields are modified in place.
-
         self.update(X, delta_X(X,P), self.eps/2.)
         self.update(P, delta_P(X,P), self.eps)
 
@@ -300,7 +306,7 @@ class HMCEvolver(Evolver):
         self.mom_refresh()
 
         # Store old field values
-        prev_action = self.action.copy()
+        prev_fields = self.action.copy_fields()
         H_old = self.H()
 
         # Integrate the trajectory
@@ -324,7 +330,7 @@ class HMCEvolver(Evolver):
                 self.rng_key, subkey = jax.random.split(self.rng_key)
                 r = jax.random.uniform(subkey)
                 if r > P_acc:
-                    self.action.fields = prev_action.fields
+                    self.action.fields = prev_fields
         
         for fname in self.field_names:
             self.field_chain[fname].append(self.action.fields[fname])
