@@ -33,7 +33,14 @@ class Evolver(ABC):
 
         self.observables = observables
 
+        self.field_names = list(action.fields.keys())
+        self.field_chain = { fname: [ action.fields[fname] ] for fname in self.field_names }
+
+        if observables is not None:
+            self.obs_chain = { obs_name: [] for obs_name in self.observables }
+
         self.N_fields = len(self.action.fields)
+
 
     @abstractmethod
     def evolve(self):
@@ -241,15 +248,16 @@ class LeapfrogIntegrator():
 
 class HMCEvolver(Evolver):
 
-    def __init__(self, action, seed, integrator, observables=None):
+    def __init__(self, action, seed, integrator, traj_init=0, observables=None):
         self.integrator = integrator
         self.monitor = {
             'delta_H': [],
             'P_acc': [],
         }
 
-        self.field_names = list(action.fields.keys())
-        self.field_chain = { fname: [] for fname in self.field_names }
+        self.traj_init = traj_init      # Initial trajectory number
+        self.traj_i = traj_init         # Current trajectory number
+        self.traj_chain = [ traj_init ]
 
         # No need to initialize momentum fields yet - will happen
         # when the evolution starts
@@ -325,17 +333,36 @@ class HMCEvolver(Evolver):
         self.monitor['delta_H'].append(delta_H)
         self.monitor['P_acc'].append(P_acc)
 
-        if not warmup:
+        if not warmup:  # Warmups always accept!
             if P_acc < 1:
                 self.rng_key, subkey = jax.random.split(self.rng_key)
                 r = jax.random.uniform(subkey)
                 if r > P_acc:
                     self.action.fields = prev_fields
-        
+
+        # Record completed trajectory        
         for fname in self.field_names:
             self.field_chain[fname].append(self.action.fields[fname])
 
+        self.traj_i += 1
+        self.traj_chain.append(self.traj_i)
+
         # Measure observables (TODO)
+        if self.observables is not None:
+            for obs in self.observables.keys():
+                obs_f, freq = self.observables[obs]
+
+                if (freq == 1) or (self.traj_i - self.traj_init) % freq == 0:
+                    self.obs_chain[obs].append(obs_f(self.action.fields, self.action.params))
+
+        
+
+
+
+
+
+        
+
 
 
 
