@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import jax
 from jax import tree_util
 from functools import partial
+import copy
 
 class Lattice(ABC):
     
@@ -29,6 +30,14 @@ class Lattice(ABC):
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
         return cls(dims=children[0])
+    
+
+    def __copy__(self):
+        cls = self.__class__
+        new = cls.__new__(cls)
+        new.__dict__.update(self.__dict__)
+
+        return new
 
 tree_util.register_pytree_node(
     Lattice,
@@ -107,10 +116,18 @@ class LatticeField:
     def _tree_unflatten(cls, aux_data, children):
         return cls(lattice=aux_data['lattice'], field=children[0], bc=aux_data['bc'], dtype=aux_data['dtype'])
 
+    def __copy__(self):
+        cls = self.__class__
+        new = cls.__new__(cls)
+        new.__dict__.update(self.__dict__)
+        new.field = jnp.copy(self.field)
+
+        return new
+
 
     # Arithmetic with fields - pass through to the field array
     def __add__(self, other):
-        new_field = self.copy()
+        new_field = self.__copy__()
         new_field.field = self.field + other.field
 
         return new_field
@@ -119,12 +136,23 @@ class LatticeField:
         self.field += other.field
 
     def __mul__(self, other):
-        new_field = self.copy()
-        new_field.field = self.field * other.field
+        new_field = self.__copy__()
+
+        if isinstance(other, LatticeField):
+            new_field.field = self.field * other.field
+        else:
+            new_field.field = self.field * other
+
         return new_field
     
     def __imul__(self, other):
-        self.field *= other.field
+        if isinstance(other, LatticeField):
+            self.field *= other.field
+        else:
+            self.field *= other
+
+    def __rmul__(self, other):
+        return self * other
 
     # TODO: more arithmetic
 
