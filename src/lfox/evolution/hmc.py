@@ -381,6 +381,20 @@ class HMCEvolver(Evolver):
         self.delta_P = self.delta_mom()
         self.delta_X = self.delta_fields()
 
+    def reverse(self):
+        # Run a reverse trajectory by flipping momenta
+        pi_rev = { fname: -1*pi for fname, pi in self.pi_fields.items() }
+        field_rev = { fname: F[-1].copy() for fname, F in self.field_chain.items() }
+
+        field_rev, pi_rev = self.integrator.integrate(
+            delta_X = self.delta_X,
+            delta_P = self.delta_P,
+            X = field_rev,
+            P = pi_rev,
+        )
+
+        return field_rev
+
     def evolve(self, warmup=False):
         # Heatbath momentum refresh
         self.mom_refresh()
@@ -419,7 +433,7 @@ class HMCEvolver(Evolver):
         self.traj_i += 1
         self.traj_chain.append(self.traj_i)
 
-        # Measure observables (TODO)
+        # Measure observables
         if self.observables is not None:
             for obs in self.observables.keys():
                 obs_f, freq = self.observables[obs]
