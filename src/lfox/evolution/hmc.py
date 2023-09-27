@@ -307,6 +307,7 @@ class HMCEvolver(Evolver):
         self.monitor = {
             'delta_H': [],
             'P_acc': [],
+            'accept': [],
         }
 
         self.traj_init = traj_init      # Initial trajectory number
@@ -419,12 +420,16 @@ class HMCEvolver(Evolver):
         self.monitor['delta_H'].append(delta_H)
         self.monitor['P_acc'].append(P_acc)
 
+        accept = True
         if not warmup:  # Warmups always accept!
             if P_acc < 1:
                 self.rng_key, subkey = jax.random.split(self.rng_key)
                 r = jax.random.uniform(subkey)
                 if r > P_acc:
+                    accept = False
                     self.action.fields = prev_fields
+
+        self.monitor['accept'].append(accept)
 
         # Record completed trajectory        
         for fname in self.field_names:

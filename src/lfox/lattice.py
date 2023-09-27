@@ -148,7 +148,7 @@ class LatticeField:
             new_field.field = self.field * other
 
         return new_field
-    
+
     def __imul__(self, other):
         if isinstance(other, LatticeField):
             self.field *= other.field
