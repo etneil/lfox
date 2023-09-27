@@ -73,10 +73,8 @@ class Action(ABC):
 
     # Action functional
     def S(self):
-        S_tot = 0.0
-
         # Evaluate main action functional
-        S_tot += self._S()
+        S_tot = self._S()
 
         # Add action functionals for any subclasses
         for action in self.sub_actions:
