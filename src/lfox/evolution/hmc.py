@@ -213,10 +213,7 @@ class Action(ABC):
         # Register the subaction
         self.sub_actions.append(other)
 
-
-
-
-class LeapfrogIntegrator():
+class MDIntegrator():
 
     def __init__(self, eps, Nstep):
         self.eps = eps
@@ -233,21 +230,73 @@ class LeapfrogIntegrator():
 
         return new_fields
 
+    @abstractmethod
+    def integrate(self, delta_X, delta_P, X, P):
+        pass
+
+
+class LeapfrogIntegrator(MDIntegrator):
+
     @partial(jax.jit, static_argnums=(0,1,2))
     def integrate(self, delta_X, delta_P, X, P):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
-        # All fields are modified in place.
+
         X = self.update(X, delta_X(X,P), self.eps/2.)
         P = self.update(P, delta_P(X,P), self.eps)
 
-        for _ in range(self.Nstep-1):
-            X = self.update(X, delta_X(X,P), self.eps)
-            P = self.update(P, delta_P(X,P), self.eps)
+        def mid_step(i, XP):
+            Xint, Pint = XP
+            Xint = self.update(Xint, delta_X(Xint,Pint), self.eps)
+            Pint = self.update(Pint, delta_P(Xint,Pint), self.eps)
+
+            return (Xint,Pint)
+        
+        X,P = jax.lax.fori_loop(0, self.Nstep-1, mid_step, (X,P))
         
         X = self.update(X, delta_X(X,P), self.eps/2.)
 
         return X, P
+    
+
+class OmelyanIntegrator(MDIntegrator):
+
+    @partial(jax.jit, static_argnums=(0,1,2))
+
+    def __init__(self, eps, Nstep, xi=0.1931833):
+        self.xi = xi
+
+        super().__init__(eps=eps, Nstep=Nstep)
+
+    @partial(jax.jit, static_argnums=(0,1,2))
+    def integrate(self, delta_X, delta_P, X, P):
+        # Note that X and P should both be dictionaries
+        # of fields (like in Action()) with matching keys.
+
+        xiEps = self.xi * self.eps
+        middle_step = (1 - 2*self.xi) * self.eps
+
+        def mid_step(i, XP):
+            Xint,Pint = XP
+
+            Xint = self.update(Xint, delta_X(Xint,Pint), 2*xiEps)
+            Pint = self.update(Pint, delta_P(Xint,Pint), self.eps/2.)
+            Xint = self.update(Xint, delta_X(Xint,Pint), middle_step)
+            Pint = self.update(Pint, delta_P(Xint,Pint), self.eps/2.)
+
+            return (Xint,Pint)
+
+        X = self.update(X, delta_X(X,P), xiEps)
+        P = self.update(P, delta_P(X,P), self.eps/2.)
+        X = self.update(X, delta_X(X,P), middle_step)
+        P = self.update(P, delta_P(X,P), self.eps/2.)
+
+        X,P = jax.lax.fori_loop(0, self.Nstep-1, mid_step, (X,P))
+        
+        X = self.update(X, delta_X(X,P), xiEps)
+
+        return X, P
+
 
 
 
