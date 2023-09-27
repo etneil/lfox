@@ -120,7 +120,9 @@ class LatticeField:
         cls = self.__class__
         new = cls.__new__(cls)
         new.__dict__.update(self.__dict__)
-        new.field = jnp.copy(self.field)
+# JAX/NumPy arrays are immutable, and this was slow for some reason
+#        new.field = jnp.copy(self.field)
+        new.field = self.field  
 
         return new
     
