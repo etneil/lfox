@@ -60,6 +60,11 @@ class Action(ABC):
     # Actions can be created by combining two actions together using += or +.
     # This uses the sub_actions parameter.
 
+    # TODO: I should decouple the action itself from the fields.  The action needs to know the NAMES
+    # of the fields, but it's mainly providing function calls to be used by JAX that I want to use
+    # within JIT compiled code, which means passing actual numerical fields as function arguments,
+    # not having them attached to an Action object.
+
     def __init__(self, fields, params=None):
         self.fields = fields
 
@@ -140,9 +145,15 @@ class Action(ABC):
         # This is meant to be maximally flexible; can always be overridden to be more efficient
         # by a subclass.
 
-        action_sig = inspect.signature(self._Sjax)
 
         return self._safe_call(self._Sjax, (self.fields, self.params))
+    
+    def _S_fields(self, fields):
+        # Exposes the fields instead of using the action object
+
+        return self._safe_call(self._Sjax, (fields, self.params))
+
+        action_sig = inspect.signature(self._Sjax)
     
         call = {}
         for k in self.fields.keys():
@@ -404,7 +415,7 @@ class HMCEvolver(Evolver):
     
     @partial(jax.jit, static_argnums=(0,))
     def _MD_traj(self, fields, pi_fields):
-        S_old =  self.action._Sjax(fields['phi'], **self.action.params)
+        S_old =  self.action._S_fields(fields)
         H_old = self._H_density(list(pi_fields.values()), S_old)
 
         fields, pi_fields = self.integrator.integrate(
@@ -414,7 +425,7 @@ class HMCEvolver(Evolver):
             P = pi_fields,
         )
 
-        S_new = self.action._Sjax(fields['phi'], **self.action.params)
+        S_new = self.action._S_fields(fields)
         H_new = self._H_density(list(pi_fields.values()), S_new)
 
         delta_H = jnp.sum(H_new.field - H_old.field)
@@ -446,7 +457,8 @@ class HMCEvolver(Evolver):
         for traj in range(ntraj):
 
             # Store old field values
-            prev_fields = self.action.copy_fields()
+#            prev_fields = self.action.copy_fields()
+            prev_fields = {fname: F.field for fname, F in self.action.fields.items() }
 
             pi_traj = self.get_momentum(self.pi_fields, traj)
 
@@ -479,7 +491,9 @@ class HMCEvolver(Evolver):
 #                    r = jax.random.uniform(subkey)
                     if r_accept[traj] > P_acc:
                         accept = False
-                        self.action.fields = prev_fields
+                        for fname in self.action.fields.keys():
+                            self.action.fields[fname].field = prev_fields[fname]
+#                        self.action.fields = prev_fields
 
             self.monitor['accept'].append(accept)
 

@@ -76,9 +76,11 @@ class HoneycombLattice(Lattice):
 
 class LatticeField:
 
-    def __init__(self, lattice: Lattice, field=None, bc=None, dtype=float):
+    # TODO: "LatticeField" having a property that is also called "field"
+    # seems confusing to me - find a better name!
+
+    def __init__(self, lattice: Lattice, field=None, bc=None):
         self.lattice = lattice
-        self.dtype = dtype
 
         if bc is None:
             # Default is periodic BC = [1,1,1,...]
@@ -97,7 +99,7 @@ class LatticeField:
                 dims = lattice.dims + [ len(lattice.unit_cell) ]
             else:
                 dims = lattice.dims
-            self.field = jnp.zeros(dims, dtype=self.dtype)
+            self.field = jnp.zeros(dims)
         else:
             self.field = field
 
@@ -106,14 +108,13 @@ class LatticeField:
         aux_data = {
             'lattice': self.lattice,
             'bc': self.bc,
-            'dtype': self.dtype,
         }
 
         return (children, aux_data)
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
-        return cls(lattice=aux_data['lattice'], field=children[0], bc=aux_data['bc'], dtype=aux_data['dtype'])
+        return cls(lattice=aux_data['lattice'], field=children[0], bc=aux_data['bc'])
 
     def __copy__(self):
         cls = self.__class__
@@ -201,8 +202,6 @@ class LatticeField:
         LF.field = nn_shift * BC_field
 
         return LF
-
-#        return nn_shift * BC_field
 
     # Legacy function; will probably be removed in later version.
     def nn(self, coords, dir, backwards=False):
