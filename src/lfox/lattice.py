@@ -133,12 +133,28 @@ class LatticeField:
     # Arithmetic with fields - pass through to the field array
     def __add__(self, other):
         new_field = self.__copy__()
-        new_field.field = self.field + other.field
+        o = getattr(other, 'field', other)
 
+        new_field.field = self.field + o
+        
         return new_field
     
     def __iadd__(self, other):
-        self.field += other.field
+        o = getattr(other, 'field', other)
+        self.field += o
+        return self
+    
+    def __sub__(self, other):
+        new_field = self.__copy__()
+        o = getattr(other, 'field', other)
+
+        new_field.field = self.field - o
+
+        return new_field
+    
+    def __isub__(self, other):
+        o = getattr(other, 'field', other)
+        self.field -= o
         return self
 
     def __mul__(self, other):
@@ -186,7 +202,12 @@ class LatticeField:
         _, winding = jnp.divmod(coords_ax+shift, self.lattice.dims[axis])
         BC_field = (BC_factor)**(winding)
 
-        return nn_shift * BC_field
+        LF = self.copy()
+        LF.field = nn_shift * BC_field
+
+        return LF
+
+#        return nn_shift * BC_field
 
     # Legacy function; will probably be removed in later version.
     def nn(self, coords, dir, backwards=False):

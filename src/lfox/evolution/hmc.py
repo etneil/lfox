@@ -158,7 +158,7 @@ class Action(ABC):
     @staticmethod
     @abstractmethod
     def _Sjax():
-        return 0.0
+        pass
 
     # Overload addition with composition
     def __iadd__(self, other):
@@ -312,36 +312,37 @@ class HMCEvolver(Evolver):
         self.traj_i = traj_init         # Current trajectory number
         self.traj_chain = [ traj_init ]
 
-        # No need to initialize momentum fields yet - will happen
-        # when the evolution starts
-        self.pi_fields = {}
 
         super().__init__(action=action, seed=seed, observables=observables)
 
         # Avoid recreating delta functions unnecessarily
         self.make_deltas()
 
+        # Initialize momentum fields
+        self.pi_fields = {}
+        for fname in self.field_names:
+            self.pi_fields[fname] = self.action.fields[fname].copy()
+
+
 
     def H(self):
-        pi_list = [ pi.field for pi in self.pi_fields.values() ]
-        KE = self._KE(pi_list)
-        return KE + self.action.S()
+        return self._H(list(self.pi_fields.values()), self.action.S())
+#        KE = self._KE(pi_list)
+#        return KE + self.action.S()
+
 
     @staticmethod
     @jax.jit
-    def _KE(pi_fields):
-        KE_sum = 0.0
+    def _H(pi_fields, S_field):
+        H_field = S_field
         for pi in pi_fields:
-            KE_sum += jnp.sum(pi**2)
-        
-        return 0.5 * KE_sum
+            H_field += 0.5 * pi**2
+
+        return jnp.sum(H_field.field)
 
     def mom_refresh(self):
         # Refactor to try to speed up a bit...
         for fname in self.field_names:
-            if self.pi_fields.get(fname) is None:
-                self.pi_fields[fname] = self.action.fields[fname].copy()
-
             self.rng_key, fresh_pi = self._mom_heatbath(self.pi_fields[fname].field.shape, self.rng_key)
             self.pi_fields[fname].field = fresh_pi
 
