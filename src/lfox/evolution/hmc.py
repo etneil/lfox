@@ -235,8 +235,12 @@ class MDIntegrator():
 
 class LeapfrogIntegrator(MDIntegrator):
 
-    @partial(jax.jit, static_argnums=(0,1,2))
+    # Temporary intermediate function for profiling
     def integrate(self, delta_X, delta_P, X, P):
+        return self._integrate(delta_X, delta_P, X, P)
+
+    @partial(jax.jit, static_argnums=(0,1,2))
+    def _integrate(self, delta_X, delta_P, X, P):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
 
@@ -258,8 +262,6 @@ class LeapfrogIntegrator(MDIntegrator):
     
 
 class OmelyanIntegrator(MDIntegrator):
-
-    @partial(jax.jit, static_argnums=(0,1,2))
 
     def __init__(self, eps, Nstep, xi=0.1931833):
         self.xi = xi
@@ -312,7 +314,6 @@ class HMCEvolver(Evolver):
         self.traj_i = traj_init         # Current trajectory number
         self.traj_chain = [ traj_init ]
 
-
         super().__init__(action=action, seed=seed, observables=observables)
 
         # Avoid recreating delta functions unnecessarily
@@ -322,7 +323,6 @@ class HMCEvolver(Evolver):
         self.pi_fields = {}
         for fname in self.field_names:
             self.pi_fields[fname] = self.action.fields[fname].copy()
-
 
 
     def H(self):
@@ -339,19 +339,23 @@ class HMCEvolver(Evolver):
             H_field += 0.5 * pi**2
 
         return jnp.sum(H_field.field)
+    
+    @staticmethod
+    @jax.jit
+    def _H_density(pi_fields, S_field):
+        H_field = S_field.copy()
+        for pi in pi_fields:
+            H_field += 0.5 * pi**2
 
-    def mom_refresh(self):
+        return H_field
+
+    def mom_refresh(self, ntraj):
         # Refactor to try to speed up a bit...
         for fname in self.field_names:
-            self.rng_key, fresh_pi = self._mom_heatbath(self.pi_fields[fname].field.shape, self.rng_key)
+            pi_shape = (ntraj,) + self.action.fields[fname].field.shape
+            self.rng_key, fresh_pi = self._mom_heatbath(pi_shape, self.rng_key)
             self.pi_fields[fname].field = fresh_pi
 
-#        for fname in self.field_names:
-#            self.rng_key, subkey = jax.random.split(self.rng_key)
-#            fresh_pi = jax.random.normal(subkey, shape=self.action.fields[fname].field.shape)
-#            if self.pi_fields.get(fname) is None:
-#                self.pi_fields[fname] = self.action.fields[fname].copy()
-#            self.pi_fields[fname].field = fresh_pi
 
     @staticmethod
     @partial(jax.jit, static_argnums=(0,))
@@ -394,56 +398,105 @@ class HMCEvolver(Evolver):
         )
 
         return field_rev
+    
+    def MD_traj(self, fields, pi_fields):
+        return self._MD_traj(fields, pi_fields)
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def _MD_traj(self, fields, pi_fields):
+        S_old =  self.action._Sjax(fields['phi'], **self.action.params)
+        H_old = self._H_density(list(pi_fields.values()), S_old)
 
-    def evolve(self, warmup=False):
-        # Heatbath momentum refresh
-        self.mom_refresh()
-
-        # Store old field values
-        prev_fields = self.action.copy_fields()
-        H_old = self.H()
-
-        # Integrate the trajectory
-        self.action.fields, self.pi_fields = self.integrator.integrate(
+        fields, pi_fields = self.integrator.integrate(
             delta_X = self.delta_X,
             delta_P = self.delta_P,
-            X = self.action.fields,
-            P = self.pi_fields,
+            X = fields,
+            P = pi_fields,
         )
 
-        # Accept/reject
-        H_new = self.H()
-        delta_H = H_new - H_old
-        P_acc = np.exp(-delta_H)
+        S_new = self.action._Sjax(fields['phi'], **self.action.params)
+        H_new = self._H_density(list(pi_fields.values()), S_new)
 
-        self.monitor['delta_H'].append(delta_H)
-        self.monitor['P_acc'].append(P_acc)
+        delta_H = jnp.sum(H_new.field - H_old.field)
+        P_acc = jnp.exp(-delta_H)
 
-        accept = True
-        if not warmup:  # Warmups always accept!
-            if P_acc < 1:
-                self.rng_key, subkey = jax.random.split(self.rng_key)
-                r = jax.random.uniform(subkey)
-                if r > P_acc:
-                    accept = False
-                    self.action.fields = prev_fields
+        return fields, pi_fields, delta_H, P_acc
 
-        self.monitor['accept'].append(accept)
+    def get_momentum(self, pi_fields, traj):
+        return self._get_momentum(pi_fields, traj)
 
-        # Record completed trajectory        
-        for fname in self.field_names:
-            self.field_chain[fname].append(self.action.fields[fname])
+    @staticmethod
+    @jax.jit
+    def _get_momentum(pi_fields, traj):
+        pi_traj = {}
+        for fname in pi_fields.keys():
+            pi_traj[fname] = pi_fields[fname].copy()
+            pi_traj[fname].field = pi_traj[fname].field[traj]
 
-        self.traj_i += 1
-        self.traj_chain.append(self.traj_i)
+        return pi_traj
 
-        # Measure observables
-        if self.observables is not None:
-            for obs in self.observables.keys():
-                obs_f, freq = self.observables[obs]
+    def evolve(self, ntraj=1, warmup=False):
+        # Draw accept/reject numbers for this run
+        self.rng_key, subkey = jax.random.split(self.rng_key)
+        r_accept = np.array(jax.random.uniform(subkey, shape=(ntraj,)))
 
-                if (freq == 1) or (self.traj_i - self.traj_init) % freq == 0:
-                    self.obs_chain[obs].append(obs_f(self.action.fields, self.action.params))
+        # Heatbath momentum refresh
+        self.mom_refresh(ntraj=ntraj)
+
+        for traj in range(ntraj):
+
+            # Store old field values
+            prev_fields = self.action.copy_fields()
+
+            pi_traj = self.get_momentum(self.pi_fields, traj)
+
+            """
+            H_old = self.H()
+
+            # Integrate the trajectory
+            self.action.fields, self.pi_fields = self.integrator.integrate(
+                delta_X = self.delta_X,
+                delta_P = self.delta_P,
+                X = self.action.fields,
+                P = self.pi_fields,
+            )
+
+            # Accept/reject
+            H_new = self.H()
+            delta_H = H_new - H_old
+            P_acc = np.exp(-delta_H)
+
+            """
+            self.action.fields, pi_traj, delta_H, P_acc = self.MD_traj(self.action.fields, pi_traj)
+
+            self.monitor['delta_H'].append(delta_H)
+            self.monitor['P_acc'].append(P_acc)
+
+            accept = True
+            if not warmup:  # Warmups always accept!
+                if P_acc < 1:
+#                    self.rng_key, subkey = jax.random.split(self.rng_key)
+#                    r = jax.random.uniform(subkey)
+                    if r_accept[traj] > P_acc:
+                        accept = False
+                        self.action.fields = prev_fields
+
+            self.monitor['accept'].append(accept)
+
+            # Record completed trajectory        
+            for fname in self.field_names:
+                self.field_chain[fname].append(self.action.fields[fname])
+
+            self.traj_i += 1
+            self.traj_chain.append(self.traj_i)
+
+            # Measure observables
+            if self.observables is not None:
+                for obs in self.observables.keys():
+                    obs_f, freq = self.observables[obs]
+
+                    if (freq == 1) or (self.traj_i - self.traj_init) % freq == 0:
+                        self.obs_chain[obs].append(obs_f(self.action.fields, self.action.params))
 
         
 

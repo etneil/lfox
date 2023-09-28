@@ -30,7 +30,6 @@ class Lattice(ABC):
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
         return cls(dims=children[0])
-    
 
     def __copy__(self):
         cls = self.__class__
