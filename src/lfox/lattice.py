@@ -160,18 +160,14 @@ class LatticeField:
     def __mul__(self, other):
         new_field = self.__copy__()
 
-        if isinstance(other, LatticeField):
-            new_field.field = self.field * other.field
-        else:
-            new_field.field = self.field * other
+        o = getattr(other, 'field', other)
+        new_field.field = self.field * o
 
         return new_field
 
     def __imul__(self, other):
-        if isinstance(other, LatticeField):
-            self.field *= other.field
-        else:
-            self.field *= other
+        o = getattr(other, 'field', other)
+        self.field *= o
 
         return self
 
