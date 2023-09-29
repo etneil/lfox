@@ -26,8 +26,8 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.25.2",
-  "jax>=0.4.14",
-  "jaxlib>=0.4.14",
+  "jax>=0.4.11",
+  "jaxlib>=0.4.11",
   "jupyter",
 ]
 
@@ -62,6 +62,24 @@ dependencies = [
   "gvar",
   "lsqfit",
   "tqdm",
+]
+
+[tool.hatch.envs.dev-metal]
+template = "dev"
+dependencies = [
+  "ml_dtypes==0.2.0",
+  "jax==0.4.11",
+  "jaxlib==0.4.11",
+  "jax-metal",
+  "matplotlib",
+  "gvar",
+  "lsqfit",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+metal = [
+  "jax-metal",
 ]
 
 [[tool.hatch.envs.all.matrix]]
