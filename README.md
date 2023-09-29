@@ -19,6 +19,7 @@ pip install lfox
 - Gauge fields!
 - Measurements!
 - Almost everything else!
+- GPL2 license?
 
 ## License
 
