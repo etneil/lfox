@@ -79,7 +79,7 @@ class LatticeField:
     # TODO: "LatticeField" having a property that is also called "field"
     # seems confusing to me - find a better name!
 
-    def __init__(self, lattice: Lattice, field=None, bc=None):
+    def __init__(self, lattice: Lattice, F=None, bc=None):
         self.lattice = lattice
 
         if bc is None:
@@ -94,17 +94,17 @@ class LatticeField:
             self.bc = bc
 
         # Initialize the field
-        if field is None:
+        if F is None:
             if hasattr(lattice, 'unit_cell'):
                 dims = lattice.dims + [ len(lattice.unit_cell) ]
             else:
                 dims = lattice.dims
-            self.field = jnp.zeros(dims)
+            self.F = jnp.zeros(dims)
         else:
-            self.field = field
+            self.F = F
 
     def _tree_flatten(self):
-        children = (self.field,)
+        children = (self.F,)
         aux_data = {
             'lattice': self.lattice,
             'bc': self.bc,
@@ -114,7 +114,7 @@ class LatticeField:
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
-        return cls(lattice=aux_data['lattice'], field=children[0], bc=aux_data['bc'])
+        return cls(lattice=aux_data['lattice'], F=children[0], bc=aux_data['bc'])
 
     def __copy__(self):
         cls = self.__class__
@@ -122,7 +122,7 @@ class LatticeField:
         new.__dict__.update(self.__dict__)
         # JAX/NumPy arrays are immutable, and this was slow for some reason
         # new.field = jnp.copy(self.field)
-        new.field = self.field  
+        new.F = self.F  
 
         return new
     
@@ -133,41 +133,41 @@ class LatticeField:
     # Arithmetic with fields - pass through to the field array
     def __add__(self, other):
         new_field = self.__copy__()
-        o = getattr(other, 'field', other)
+        o = getattr(other, 'F', other)
 
-        new_field.field = self.field + o
+        new_field.F = self.F + o
         
         return new_field
     
     def __iadd__(self, other):
-        o = getattr(other, 'field', other)
-        self.field += o
+        o = getattr(other, 'F', other)
+        self.F += o
         return self
     
     def __sub__(self, other):
         new_field = self.__copy__()
-        o = getattr(other, 'field', other)
+        o = getattr(other, 'F', other)
 
-        new_field.field = self.field - o
+        new_field.F = self.F - o
 
         return new_field
     
     def __isub__(self, other):
-        o = getattr(other, 'field', other)
-        self.field -= o
+        o = getattr(other, 'F', other)
+        self.F -= o
         return self
 
     def __mul__(self, other):
         new_field = self.__copy__()
 
-        o = getattr(other, 'field', other)
-        new_field.field = self.field * o
+        o = getattr(other, 'F', other)
+        new_field.F = self.F * o
 
         return new_field
 
     def __imul__(self, other):
-        o = getattr(other, 'field', other)
-        self.field *= o
+        o = getattr(other, 'F', other)
+        self.F *= o
 
         return self
 
@@ -176,12 +176,12 @@ class LatticeField:
 
     def __pow__(self, power):
         new_field = self.__copy__()
-        new_field.field = self.field ** power
+        new_field.F = self.F ** power
 
         return new_field
     
     def __ipow__(self, power):
-        self.field **= power
+        self.F **= power
         return self
 
     # TODO: more arithmetic
@@ -189,7 +189,7 @@ class LatticeField:
     # JIT compiling this didn't seem useful in initial tests, at least as written...
     #@partial(jax.jit, static_argnums=(1,))
     def nn_field(self, axis, shift=1):
-        nn_shift = self.lattice.shift(self.field, axis=axis, shift=shift)
+        nn_shift = self.lattice.shift(self.F, axis=axis, shift=shift)
 
         # Apply boundary conditions globally with some arcane NumPy manipulations
         BC_factor = self.bc[axis]  # 1 or -1
@@ -199,7 +199,7 @@ class LatticeField:
         BC_field = (BC_factor)**(winding)
 
         LF = self.copy()
-        LF.field = nn_shift * BC_field
+        LF.F = nn_shift * BC_field
 
         return LF
 

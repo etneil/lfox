@@ -349,7 +349,7 @@ class HMCEvolver(Evolver):
         for pi in pi_fields:
             H_field += 0.5 * pi**2
 
-        return jnp.sum(H_field.field)
+        return jnp.sum(H_field.F)
     
     @staticmethod
     @jax.jit
@@ -363,9 +363,9 @@ class HMCEvolver(Evolver):
     def mom_refresh(self, ntraj):
         # Refactor to try to speed up a bit...
         for fname in self.field_names:
-            pi_shape = (ntraj,) + self.action.fields[fname].field.shape
+            pi_shape = (ntraj,) + self.action.fields[fname].F.shape
             self.rng_key, fresh_pi = self._mom_heatbath(pi_shape, self.rng_key)
-            self.pi_fields[fname].field = fresh_pi
+            self.pi_fields[fname].F = fresh_pi
 
 
     @staticmethod
@@ -428,7 +428,7 @@ class HMCEvolver(Evolver):
         S_new = self.action._S_fields(fields)
         H_new = self._H_density(list(pi_fields.values()), S_new)
 
-        delta_H = jnp.sum(H_new.field - H_old.field)
+        delta_H = jnp.sum(H_new.F - H_old.F)
         P_acc = jnp.exp(-delta_H)
 
         return fields, pi_fields, delta_H, P_acc
@@ -442,7 +442,7 @@ class HMCEvolver(Evolver):
         pi_traj = {}
         for fname in pi_fields.keys():
             pi_traj[fname] = pi_fields[fname].copy()
-            pi_traj[fname].field = pi_traj[fname].field[traj]
+            pi_traj[fname].F = pi_traj[fname].F[traj]
 
         return pi_traj
 
@@ -458,7 +458,7 @@ class HMCEvolver(Evolver):
 
             # Store old field values
 #            prev_fields = self.action.copy_fields()
-            prev_fields = {fname: F.field for fname, F in self.action.fields.items() }
+            prev_fields = {fname: field.F for fname, field in self.action.fields.items() }
 
             pi_traj = self.get_momentum(self.pi_fields, traj)
 
@@ -492,7 +492,7 @@ class HMCEvolver(Evolver):
                     if r_accept[traj] > P_acc:
                         accept = False
                         for fname in self.action.fields.keys():
-                            self.action.fields[fname].field = prev_fields[fname]
+                            self.action.fields[fname].F = prev_fields[fname]
 #                        self.action.fields = prev_fields
 
             self.monitor['accept'].append(accept)
