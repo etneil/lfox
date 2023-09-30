@@ -182,6 +182,10 @@ class LatticeField:
     def __ipow__(self, power):
         self.F **= power
         return self
+    
+    def conj(self):
+        self.F = self.F.conj()
+        return self
 
     # TODO: more arithmetic
 
