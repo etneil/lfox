@@ -205,6 +205,10 @@ class LatticeField:
         LF.F = nn_shift * BC_field
 
         return LF
+    
+    def unit_fill(self):
+        self.F = jnp.ones_like(self.F)
+        return self
 
     # Legacy function; will probably be removed in later version.
     def nn(self, coords, dir, backwards=False):
