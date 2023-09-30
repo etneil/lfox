@@ -11,6 +11,7 @@ class Lattice(ABC):
     def __init__(self, dims):
 
         self.dims = dims
+        self._dims = dims
         self.d = len(dims)
 
     # "Shift" function, that will take an arbitrary
@@ -59,6 +60,7 @@ class HoneycombLattice(Lattice):
         self.unit_cell = [0, 1]
         super().__init__(dims=dims)
 
+        self._dims = self.dims + (len(self.unit_cell),)
 
     def shift(self, field, axis, shift=1):
         # Shift within the unit cell too if we are moving in axis 0
@@ -76,9 +78,6 @@ class HoneycombLattice(Lattice):
 
 class LatticeField:
 
-    # TODO: "LatticeField" having a property that is also called "field"
-    # seems confusing to me - find a better name!
-
     def __init__(self, lattice: Lattice, F=None, bc=None):
         self.lattice = lattice
 
@@ -95,13 +94,13 @@ class LatticeField:
 
         # Initialize the field
         if F is None:
-            if hasattr(lattice, 'unit_cell'):
-                dims = lattice.dims + [ len(lattice.unit_cell) ]
-            else:
-                dims = lattice.dims
-            self.F = jnp.zeros(dims)
+            self._set_default_field()
         else:
             self.F = F
+
+    def _set_default_field(self):
+        dims = self.lattice._dims
+        self.F = jnp.zeros(dims)
 
     def _tree_flatten(self):
         children = (self.F,)
@@ -228,3 +227,47 @@ tree_util.register_pytree_node(
     LatticeField._tree_flatten,
     LatticeField._tree_unflatten,
 )
+
+
+class LatticeTensorField(LatticeField):
+
+    def __init__(self, lattice: Lattice, indices, F=None, bc=None):
+        """
+        Extension of LatticeField to tensor-valued fields.
+        Additional indices are represented as extra array dims in F
+        that occur after the lattice dims.
+
+        'indices' should be a sequence of 2-tuples, each of which
+        consists of a label (the index name) and an integer or tuple of
+        integers (the extra dimensions).
+
+        For example, given a Lattice with dims (6,6,6), and the following
+        input:
+
+        indices = ( ('spin', 4), ('color', (3,3)) )
+
+        the dimension of the resulting field will be (6, 6, 6, 4, 3, 3).
+        """
+
+        self.dims = lattice.dims
+        d = len(lattice._dims)
+        self.labels = {}
+
+        d_index = d
+
+        for ix in range(len(indices)):
+            label, ldims = indices[ix]
+            if isinstance(ldims, int):
+                self.dims += (ldims,)
+                self.labels[label] = d_index
+                d_index += 1
+            else:
+                self.dims += tuple(ldims)
+                self.labels[label] = tuple(range(d_index, d_index + len(ldims)))
+                d_index += len(ldims)
+        
+        super().__init__(lattice=lattice, F=F, bc=bc)
+
+
+    def _set_default_field(self):
+        self.F = jnp.zeros(self.dims)
