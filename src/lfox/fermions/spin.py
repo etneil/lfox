@@ -1,4 +1,6 @@
 import numpy as np
+import jax
+import jax.numpy as jnp
 from lfox.lattice import Lattice, LatticeTensorField
 
 Pauli_X = np.array([[0,1],[1,0]])
@@ -56,7 +58,7 @@ GammaMatrix = {
 
 # TODO: mark this all as 4D and/or generalize...
 
-class DiracFermionField(LatticeTensorField):
+class Dirac4DFermionField(LatticeTensorField):
 
     def __init__(self, lattice: Lattice, F=None, bc=None):
         indices = [
@@ -65,3 +67,26 @@ class DiracFermionField(LatticeTensorField):
 
         super().__init__(lattice=lattice, indices=indices, F=F, bc=bc)
 
+    def bilinear(self, other, spin_mat=None):
+        new_fermion = self.copy()
+
+        if spin_mat is None:
+            new_fermion.F = self._inner_product(self.F, other.F)
+        else:
+            new_fermion.F = self._spin_product(self.F, spin_mat, other.F)
+
+        return new_fermion
+
+    def conj(self):
+        self.F = self.F.conj()
+        return self
+
+    @staticmethod
+    @jax.jit
+    def _inner_product(psi_L, psi_R):
+        return jnp.einsum('...i,...i', psi_L.conj(), psi_R)
+    
+    @staticmethod
+    @jax.jit
+    def _spin_product(psi_L, spin_mat, psi_R):
+        return jnp.einsum('...i,ij,...j', psi_L.conj(), spin_mat, psi_R)
