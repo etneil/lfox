@@ -10,6 +10,10 @@ class Lattice(ABC):
     
     def __init__(self, dims):
 
+        # self.dims contains the spacetime indices;
+        # self._dims includes any internal unit-cell indices.
+        # TODO: find a better/less confusing way to represent this...?
+
         self.dims = dims
         self._dims = dims
         self.d = len(dims)
@@ -50,6 +54,29 @@ class SquareLattice(Lattice):
     def shift(self, field, axis, shift=1):
         return jnp.roll(field, shift=shift, axis=axis)
     
+    # Red-black checkerboarding
+    # rb fields are defined on a sublattice with 1/2 size.
+    def rb_split(self, field):
+        # The goal is to figure this out efficiently, but
+        # it seems very tricky especially with boundary conditions...
+        # Return to it later.
+
+        pass
+        #return cb_red, cb_black
+    
+    def rb_combine(self, field_cb_red, field_cb_black):
+        # Inverse of rb_split, however that ends up being implemented!
+        pass
+        #return field
+
+    @staticmethod
+    @jax.jit
+    def _set_checkerboard(dims):
+        cb_black = jnp.indices(dims).sum(axis=0) % 2
+        cb_red = (cb_black + 1) % 2
+
+        return [cb_black, cb_red]        
+    
 class HoneycombLattice(Lattice):
 
     def __init__(self, dims):
@@ -77,9 +104,30 @@ class HoneycombLattice(Lattice):
 
 
 class LatticeField:
+    """
+    Additional indices are represented as extra array dims in F
+    that occur after the lattice dims.
 
-    def __init__(self, lattice: Lattice, F=None, bc=None):
+    'indices' should be a sequence of integers giving the size of
+    each of the extra dimensions of the field.  For example, given
+    a Lattice with dims (6,6,6), and an indices tuple of (4,3) - say,
+    a Dirac spinor with an SU(3) color index - the dimension of the 
+    resulting field would be (6,6,6,4,3).
+    """
+
+    def __init__(self, lattice: Lattice, F=None, bc=None, indices=None):
         self.lattice = lattice
+        self.dims = self.lattice._dims
+
+        if indices is not None:
+            self.indices = indices
+            self.dims += tuple(indices)
+
+
+        # Set up dimensions for spacetime broadcasting
+        self.st_dims = self.lattice._dims
+        if indices is not None:
+            self.st_dims += (1,) * len(self.indices)
 
         if bc is None:
             # Default is periodic BC = [1,1,1,...]
@@ -99,21 +147,21 @@ class LatticeField:
             self.F = F
 
     def _set_default_field(self):
-        dims = self.lattice._dims
-        self.F = jnp.zeros(dims)
+        self.F = jnp.zeros(self.dims)
 
     def _tree_flatten(self):
         children = (self.F,)
         aux_data = {
             'lattice': self.lattice,
             'bc': self.bc,
+            'indices': self.indices,
         }
 
         return (children, aux_data)
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
-        return cls(lattice=aux_data['lattice'], F=children[0], bc=aux_data['bc'])
+        return cls(lattice=aux_data['lattice'], F=children[0], bc=aux_data['bc'], indices=aux_data['indices'])
 
     def __copy__(self):
         cls = self.__class__
@@ -202,12 +250,16 @@ class LatticeField:
         BC_field = (BC_factor)**(winding)
 
         LF = self.copy()
-        LF.F = nn_shift * BC_field
+        LF.F = nn_shift * BC_field.reshape(self.st_dims)
 
         return LF
     
     def unit_fill(self):
         self.F = jnp.ones_like(self.F)
+        return self
+    
+    def zero_fill(self):
+        self.F = jnp.zeros_like(self.F)
         return self
 
     # Legacy function; will probably be removed in later version.
@@ -235,47 +287,3 @@ tree_util.register_pytree_node(
     LatticeField._tree_flatten,
     LatticeField._tree_unflatten,
 )
-
-
-class LatticeTensorField(LatticeField):
-
-    def __init__(self, lattice: Lattice, indices, F=None, bc=None):
-        """
-        Extension of LatticeField to tensor-valued fields.
-        Additional indices are represented as extra array dims in F
-        that occur after the lattice dims.
-
-        'indices' should be a sequence of 2-tuples, each of which
-        consists of a label (the index name) and an integer or tuple of
-        integers (the extra dimensions).
-
-        For example, given a Lattice with dims (6,6,6), and the following
-        input:
-
-        indices = ( ('spin', 4), ('color', (3,3)) )
-
-        the dimension of the resulting field will be (6, 6, 6, 4, 3, 3).
-        """
-
-        self.dims = lattice.dims
-        d = len(lattice._dims)
-        self.labels = {}
-
-        d_index = d
-
-        for ix in range(len(indices)):
-            label, ldims = indices[ix]
-            if isinstance(ldims, int):
-                self.dims += (ldims,)
-                self.labels[label] = d_index
-                d_index += 1
-            else:
-                self.dims += tuple(ldims)
-                self.labels[label] = tuple(range(d_index, d_index + len(ldims)))
-                d_index += len(ldims)
-        
-        super().__init__(lattice=lattice, F=F, bc=bc)
-
-
-    def _set_default_field(self):
-        self.F = jnp.zeros(self.dims)

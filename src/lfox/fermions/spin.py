@@ -1,7 +1,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from lfox.lattice import Lattice, LatticeTensorField
+from lfox.lattice import Lattice, LatticeField
 
 Pauli_X = np.array([[0,1],[1,0]])
 Pauli_Y = np.array([[0,-1j],[1j,0]])
@@ -44,6 +44,7 @@ SigmaMatrix = {
     'X': Pauli_X,
     'Y': Pauli_Y,
     'Z': Pauli_Z,
+    'I': np.eye(2),
 }
 
 GammaMatrix = {
@@ -52,18 +53,19 @@ GammaMatrix = {
     2: Gamma_2,
     3: Gamma_3,
     5: Gamma_5,
+    'I': np.eye(4),
 }
 
 # TODO: add some algebraic tests to verify the above constants
 
 # TODO: mark this all as 4D and/or generalize...
 
-class Dirac4DFermionField(LatticeTensorField):
+class Dirac4DFermionField(LatticeField):
 
-    def __init__(self, lattice: Lattice, F=None, bc=None):
-        indices = [
-            ('spin', 4),
-        ]
+    def __init__(self, lattice: Lattice, F=None, bc=None, indices=None):
+        # "Indices" is being ignored, there is probably a better way...
+
+        indices = (4,)
 
         super().__init__(lattice=lattice, indices=indices, F=F, bc=bc)
 
@@ -73,7 +75,7 @@ class Dirac4DFermionField(LatticeTensorField):
         if spin_mat is None:
             new_fermion.F = self._inner_product(self.F, other.F)
         else:
-            new_fermion.F = self._spin_product(self.F, spin_mat, other.F)
+            new_fermion.F = self._inner_spin_product(self.F, spin_mat, other.F)
 
         return new_fermion
 
@@ -88,5 +90,16 @@ class Dirac4DFermionField(LatticeTensorField):
     
     @staticmethod
     @jax.jit
-    def _spin_product(psi_L, spin_mat, psi_R):
+    def _inner_spin_product(psi_L, spin_mat, psi_R):
         return jnp.einsum('...i,ij,...j', psi_L.conj(), spin_mat, psi_R)
+    
+    @staticmethod
+    @jax.jit
+    def _spin_product(spin_mat, psi):
+        return jnp.einsum('ij,...j', spin_mat, psi)
+    
+jax.tree_util.register_pytree_node(
+    Dirac4DFermionField,
+    Dirac4DFermionField._tree_flatten,
+    Dirac4DFermionField._tree_unflatten,
+)
