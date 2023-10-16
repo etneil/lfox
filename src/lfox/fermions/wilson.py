@@ -32,6 +32,7 @@ class WilsonDiracOp():
 
         return Dpsi
 
+    @partial(jax.jit, static_argnums=(0,))
     def op(self, psi):
         chi = psi.copy()
         chi -= self.kappa * self.Dslash(psi)
