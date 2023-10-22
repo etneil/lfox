@@ -82,6 +82,12 @@ class Dirac4DFermionField(LatticeField):
     def conj(self):
         self.F = self.F.conj()
         return self
+    
+    def dot(self, other):
+        return jnp.sum(self._inner_product(self.F, other.F))
+    
+    def norm_sq(self):
+        return jnp.sum(self._inner_product(self.F, self.F))
 
     @staticmethod
     @jax.jit

@@ -220,6 +220,20 @@ class LatticeField:
 
     def __rmul__(self, other):
         return self * other
+    
+    def __truediv__(self, other):
+        new_field = self.__copy__()
+
+        o = getattr(other, 'F', other)
+        new_field.F = self.F / o
+
+        return new_field
+    
+    def __itruediv__(self, other):
+        o = getattr(other, 'F', other)
+        self.F /= o
+
+        return self
 
     def __pow__(self, power):
         new_field = self.__copy__()
