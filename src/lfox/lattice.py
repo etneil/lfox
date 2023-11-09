@@ -122,7 +122,8 @@ class LatticeField:
         if indices is not None:
             self.indices = indices
             self.dims += tuple(indices)
-
+        else:
+            self.indices = ()
 
         # Set up dimensions for spacetime broadcasting
         self.st_dims = self.lattice._dims
