@@ -40,7 +40,7 @@ class Evolver(ABC):
         if observables is not None:
             self.obs_chain = { obs_name: [] for obs_name in self.observables }
 
-        self.N_fields = len(self.action.fields)
+        self.N_fields = len(self.field_names)
 
 
     @abstractmethod
@@ -51,11 +51,28 @@ class Evolver(ABC):
 
 class Action(ABC):
     # An action needs the following to be created:
-    # - A dictionary of lattice fields
+    # - An ordered list of lattice field names
     # - [optional] A dictionary of non-field parameters the action depends on (e.g. couplings)
 
+    # Although most functions of fields use dictionaries in lfox, we use lists in action definitions.
+    # This is to make "aliasing" easy - defining copies of the action with different field names, 
+    # for example to create a many-flavor fermion action.
+
     # The action functional _S should depend on the fields and parameters, and
-    # should be implemented by any inheriting subclass.
+    # should be implemented by any inheriting subclass.  It should have signature:
+    # def _S(self, field_list):
+    #    (...)
+    # 
+    # where `fields` is a list of fields.  The function S(self, fields) takes a dictionary
+    # of fields, mapping it to a list using Action.field_names.
+    
+    # JIT compilation of the action is HIGHLY RECOMMENDED.  This should be done using a "partial"
+    # decorator to treat the action "self" as static, i.e.
+    # @staticmethod
+    # @partial(jax.jit, static_argnums=(0,))
+    # def _S(self, field_list):
+    #    (...)
+
 
     # Actions can be created by combining two actions together using += or +.
     # This uses the sub_actions parameter.
@@ -65,8 +82,8 @@ class Action(ABC):
     # within JIT compiled code, which means passing actual numerical fields as function arguments,
     # not having them attached to an Action object.
 
-    def __init__(self, fields, params=None):
-        self.fields = fields
+    def __init__(self, field_names, params=None):
+        self.field_names = field_names
 
         if params is None:
             self.params = {}
@@ -76,16 +93,27 @@ class Action(ABC):
         self.sub_actions = []
         self.forces = None
 
-    # Action functional
-    def S(self):
+    # Action density functional
+    def S_field(self, fields):
         # Evaluate main action functional
-        S_tot = self._S()
+        field_call = [ fields[fname] for fname in self.field_names ]
+
+        S_tot = self._S(fields=field_call, params=self.params)
 
         # Add action functionals for any subclasses
         for action in self.sub_actions:
-            S_tot += action._S()
+            field_call = [ fields[fname] for fname in action.field_names ]
+            S_tot += action._S(fields=field_call, params=self.params)
 
         return S_tot
+    
+    # Total action
+    # Note that we DON'T have to be careful about extra indices here;
+    # the action density must already be a scalar per-site, so a simple
+    # jnp.sum is guaranteed to be a sum over the lattice sites.
+    def S(self, fields):
+        S_density = self.S_field(fields)
+        return jnp.sum(S_density.F)
 
     def get_forces(self, recompute=False):
         if recompute or self.forces == None:
@@ -104,24 +132,54 @@ class Action(ABC):
                     call[k] = D[k]
         return F(**call)
 
+
+
+
+
     def _compute_forces(self):
+        # Hmm, is it really this easy?
+        self.forces = jax.jit(jax.grad(lambda fields: self.S(fields)))
+        return
+
+        """
         action_sig = inspect.signature(self._Sjax)
         action_pars = list(action_sig.parameters)
 
         grads = {}
+
         for fname in self.fields.keys():
             grads[fname] = []
 
             # Compute gradient of total action with respect to each field
             # Start with the main action
             field_i = action_pars.index(fname)
-            grads[fname].append(jax.grad(self._Sjax, argnums=field_i))
+            grads[fname].append(jax.grad(self._S, argnums=field_i))
 
             for subact in self.sub_actions:
-                subact_pars = list(inspect.signature(subact._Sjax).parameters)
+                subact_pars = list(inspect.signature(subact._S).parameters)
                 field_i = subact_pars.index(fname)
-                grads[fname].append(jax.grad(subact._Sjax, argnums=field_i))
+                grads[fname].append(jax.grad(subact._S, argnums=field_i))
+        """
 
+        grads = {}
+        
+        # Collect all unique field names, including subactions
+        all_field_names = set(self.field_names)
+        for subact in self.sub_actions:
+            all_field_names = all_field_names | subact.field_names
+
+        # Compute gradient w.r.t. each field
+        for fname in all_field_names:
+            grads[fname] = []
+            if fname in self.field_names:
+                field_i = self.field_names.index(fname)
+                grads[fname].append(jax.jit(jax.grad(self._S, argnums=field_i)))
+            
+            for subact in self.sub_actions:
+                if fname in subact.field_names:
+                    field_i = self.field_names.index(fname)
+                    grads[fname].append(jax.jit(jax.grad(subact._S, argnums=field_i)))
+        
         # Combine into a single function that returns a dictionary matching self.fields
         def force_func(fields):
             forces = {}
@@ -130,46 +188,26 @@ class Action(ABC):
                 for G in grads[fname]:
                     total_force.append(self._safe_call(G, (fields, self.params)))
 
-                forces[fname] = sum(total_force)
+                forces[fname] = jnp.sum(total_force)
 
             return forces
 
         self.forces = force_func
 
 
-    def _S(self):
+    @staticmethod
+    @abstractmethod
+    def _S(fields, params):
         # This method interfaces to a function which can be JIT compiled and which is friendly
         # to computing JAX gradients.
         # Call signature (fields and params) MUST match the names
         # in the dictionaries.
         # This is meant to be maximally flexible; can always be overridden to be more efficient
         # by a subclass.
-
-
-        return self._safe_call(self._Sjax, (self.fields, self.params))
-    
-    def _S_fields(self, fields):
-        # Exposes the fields instead of using the action object
-
-        return self._safe_call(self._Sjax, (fields, self.params))
-
-        action_sig = inspect.signature(self._Sjax)
-    
-        call = {}
-        for k in self.fields.keys():
-            if k in action_sig.parameters:
-                call[k] = self.fields[k]
-        for k in self.params.keys():
-            if k in action_sig.parameters:
-                call[k] = self.params[k]
-
-        return self._Sjax(**call)
-
-
-    @staticmethod
-    @abstractmethod
-    def _Sjax():
         pass
+
+#        return self._safe_call(self._Sjax, (self.fields, self.params))
+    
 
     # Overload addition with composition
     def __iadd__(self, other):
@@ -186,30 +224,23 @@ class Action(ABC):
         cls = self.__class__
         new = cls.__new__(cls)
         new.__dict__.update(self.__dict__)
-        for fname in self.fields.keys():
-            new.fields[fname] = self.fields[fname].copy()
-        
+
+        new.field_names = self.field_names.copy()
+
+        # Populate sub-action list with copies to avoid
+        # unintentional side effects
+        new.sub_actions = []
+        for subact in self.sub_actions:
+            new.sub_actions.append(subact.copy())
+                
         return new
 
     def copy(self):
         return self.__copy__()
-    
-    def copy_fields(self):
-        new_fields = {}
-        for fname in self.fields.keys():
-            new_fields[fname] = self.fields[fname].copy()
-
-        return new_fields
 
     def add_subaction(self, other):
-        # Combine the fields; in case of name collision, make sure they are really the same field!
-        for field_name in other.fields.keys():
-            if self.fields.get(field_name) is not None:
-                assert self.fields[field_name] is other.fields[field_name]
-            
-            self.fields[field_name] = other.fields[field_name]
-        
         # Combine the parameters
+        # TODO: warn in case of collision, which will overwrite...
         self.params.update(other.params)
 
         # If there are subactions within the other field, promote them up to the current subaction list

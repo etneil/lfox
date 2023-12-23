@@ -118,6 +118,7 @@ class LatticeField:
     def __init__(self, lattice: Lattice, F=None, bc=None, indices=None):
         self.lattice = lattice
         self.dims = self.lattice._dims
+        self.d = self.lattice.d
 
         if indices is not None:
             self.indices = indices
