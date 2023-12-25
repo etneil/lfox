@@ -9,15 +9,21 @@ class Evolver(ABC):
     # Any (MCMC) evolver needs:
     # - An action object, which contains the action functional, the set of fields
     #   to be evolved, and other key auxiliary information
-    # - A dictionary of observables to measure, along with measurement frequencies,
-    #   in the form:  { 'obs_name': [obs_function, 10] }
     # - An RNG seed.  Note that this always shows the INITIAL seed value used;
     #   the evolving JAX RNG key is saved in the `rng_key` property.
+    # - An initial set of fields, as a "fields" dictionary, keyed on field names
+    #   which match self.action.field_names.
+    # - (optional) A dictionary of observables to measure, along with measurement frequencies,
+    #   in the form:  { 'obs_name': [obs_function, 10] }
+    # - (optional) Frequency at which to save field configurations to the internal Markov
+    #   chain (default: 1, save every step)
 
     # Any other hyperparameters for evolution (integrators etc.) should be properties
     # of concrete implementations which inherit from Evolver.
     
     # Properties it should have:
+    # - A current field state, as a "fields" dictionary, keyed on field names
+    # which match self.action.field_names.
     # - A Markov chain (before evolution, just the initial
     # field configuration lives here)
     # - A dict of lists of observable measurements (paired with configuration #s)
@@ -27,25 +33,38 @@ class Evolver(ABC):
     # - Heatbath/OR
     # - Cluster algorithms
 
-    def __init__(self, action, seed, observables=None):
+    def __init__(self, action, seed, init_fields, observables=None, save_freq=1):
         self.action = action
         self.seed = seed
         self.rng_key = jax.random.PRNGKey(self.seed)
+        self.fields = init_fields
+        self.save_freq = save_freq
+
+        # Every field should correpond to something in the action
+        for key in self.fields.keys():
+            assert key in self.action.field_names
+
+        # Every field in the action should be specified
+        for key in self.action.field_names:
+            assert key in self.fields.keys()
 
         self.observables = observables
 
-        self.field_names = list(action.fields.keys())
-        self.field_chain = { fname: [ action.fields[fname] ] for fname in self.field_names }
+#        self.field_names = list(action.fields.keys())
+#        self.field_chain = { fname: [ action.fields[fname] ] for fname in self.field_names }
+        self.field_chain = { fname: init_fields[fname] for fname in init_fields.keys() }
 
         if observables is not None:
             self.obs_chain = { obs_name: [] for obs_name in self.observables }
 
-        self.N_fields = len(self.field_names)
+        self.N_fields = len(self.field_chain.keys())
 
 
     @abstractmethod
     def evolve(self):
         pass
+
+
 
 
 
@@ -205,8 +224,6 @@ class Action(ABC):
         # This is meant to be maximally flexible; can always be overridden to be more efficient
         # by a subclass.
         pass
-
-#        return self._safe_call(self._Sjax, (self.fields, self.params))
     
 
     # Overload addition with composition
@@ -252,6 +269,9 @@ class Action(ABC):
 
         # Register the subaction
         self.sub_actions.append(other)
+
+        # Recompute forces since action has changed
+        self._compute_forces()
 
 class MDIntegrator():
 
@@ -344,7 +364,7 @@ class OmelyanIntegrator(MDIntegrator):
 
 class HMCEvolver(Evolver):
 
-    def __init__(self, action, seed, integrator, traj_init=0, observables=None):
+    def __init__(self, action, seed, init_fields, integrator, traj_init=0, observables=None, save_freq=1):
         self.integrator = integrator
         self.monitor = {
             'delta_H': [],
@@ -356,27 +376,25 @@ class HMCEvolver(Evolver):
         self.traj_i = traj_init         # Current trajectory number
         self.traj_chain = [ traj_init ]
 
-        super().__init__(action=action, seed=seed, observables=observables)
+        super().__init__(action=action, seed=seed, observables=observables, init_fields=init_fields,
+                         save_freq=save_freq)
 
         # Avoid recreating delta functions unnecessarily
         self.make_deltas()
 
         # Initialize momentum fields
         self.pi_fields = {}
-        for fname in self.field_names:
-            self.pi_fields[fname] = self.action.fields[fname].copy()
+        for fname in self.action.field_names:
+            self.pi_fields[fname] = self.init_fields[fname].copy()
 
 
     def H(self):
-        return self._H(list(self.pi_fields.values()), self.action.S())
-#        KE = self._KE(pi_list)
-#        return KE + self.action.S()
-
+        return self._H(list(self.pi_fields.values()), self.action.S_field())
 
     @staticmethod
     @jax.jit
     def _H(pi_fields, S_field):
-        H_field = S_field
+        H_field = S_field.copy()
         for pi in pi_fields:
             H_field += 0.5 * pi**2
 
@@ -393,8 +411,8 @@ class HMCEvolver(Evolver):
 
     def mom_refresh(self, ntraj):
         # Refactor to try to speed up a bit...
-        for fname in self.field_names:
-            pi_shape = (ntraj,) + self.action.fields[fname].F.shape
+        for fname in self.action.field_names:
+            pi_shape = (ntraj,) + self.fields[fname].F.shape
             self.rng_key, fresh_pi = self._mom_heatbath(pi_shape, self.rng_key)
             self.pi_fields[fname].F = fresh_pi
 
@@ -410,7 +428,7 @@ class HMCEvolver(Evolver):
         F = self.action.get_forces()
         def delta_P(X, P):
             result = {}
-            for field in self.field_names:
+            for field in self.action.field_names:
                 result[field] = -1 * F(X)[field]
 
             return result
@@ -446,7 +464,8 @@ class HMCEvolver(Evolver):
     
     @partial(jax.jit, static_argnums=(0,))
     def _MD_traj(self, fields, pi_fields):
-        S_old =  self.action._S_fields(fields)
+        # Static-self JIT probably dangerous, try to test later...
+        S_old =  self.action.S_field(fields)
         H_old = self._H_density(list(pi_fields.values()), S_old)
 
         fields, pi_fields = self.integrator.integrate(
@@ -456,7 +475,7 @@ class HMCEvolver(Evolver):
             P = pi_fields,
         )
 
-        S_new = self.action._S_fields(fields)
+        S_new = self.action.S_field(fields)
         H_new = self._H_density(list(pi_fields.values()), S_new)
 
         delta_H = jnp.sum(H_new.F - H_old.F)
@@ -489,7 +508,7 @@ class HMCEvolver(Evolver):
 
             # Store old field values
 #            prev_fields = self.action.copy_fields()
-            prev_fields = {fname: field.F for fname, field in self.action.fields.items() }
+            prev_fields = {fname: field.F for fname, field in self.fields.items() }
 
             pi_traj = self.get_momentum(self.pi_fields, traj)
 
@@ -522,14 +541,15 @@ class HMCEvolver(Evolver):
 #                    r = jax.random.uniform(subkey)
                     if r_accept[traj] > P_acc:
                         accept = False
-                        for fname in self.action.fields.keys():
-                            self.action.fields[fname].F = prev_fields[fname]
+                        for fname in self.action.field_names:
+                            self.fields[fname].F = prev_fields[fname]
 #                        self.action.fields = prev_fields
 
             self.monitor['accept'].append(accept)
 
             # Record completed trajectory        
-            for fname in self.field_names:
+            for fname in self.action.field_names:
+                # TODO: use save_freq here to modify
                 self.field_chain[fname].append(self.action.fields[fname])
 
             self.traj_i += 1
@@ -541,7 +561,7 @@ class HMCEvolver(Evolver):
                     obs_f, freq = self.observables[obs]
 
                     if (freq == 1) or (self.traj_i - self.traj_init) % freq == 0:
-                        self.obs_chain[obs].append(obs_f(self.action.fields, self.action.params))
+                        self.obs_chain[obs].append(obs_f(self.fields, self.action.params))
 
         
 
