@@ -134,6 +134,11 @@ class Action(ABC):
         S_density = self.S_field(fields)
         return jnp.sum(S_density.F)
 
+    @partial(jax.jit, static_argnums=(0,))
+    def dS(self, fields):
+        return jax.grad(self.S)(fields)
+
+
     def get_forces(self, recompute=False):
         if recompute or self.forces == None:
             self._compute_forces()
