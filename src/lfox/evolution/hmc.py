@@ -52,7 +52,7 @@ class Evolver(ABC):
 
 #        self.field_names = list(action.fields.keys())
 #        self.field_chain = { fname: [ action.fields[fname] ] for fname in self.field_names }
-        self.field_chain = { fname: init_fields[fname] for fname in init_fields.keys() }
+        self.field_chain = { fname: [init_fields[fname]] for fname in init_fields.keys() }
 
         if observables is not None:
             self.obs_chain = { obs_name: [] for obs_name in self.observables }
@@ -385,7 +385,7 @@ class HMCEvolver(Evolver):
         # Initialize momentum fields
         self.pi_fields = {}
         for fname in self.action.field_names:
-            self.pi_fields[fname] = self.init_fields[fname].copy()
+            self.pi_fields[fname] = self.fields[fname].copy()
 
 
     def H(self):
@@ -529,7 +529,7 @@ class HMCEvolver(Evolver):
             P_acc = np.exp(-delta_H)
 
             """
-            self.action.fields, pi_traj, delta_H, P_acc = self.MD_traj(self.action.fields, pi_traj)
+            self.fields, pi_traj, delta_H, P_acc = self.MD_traj(self.fields, pi_traj)
 
             self.monitor['delta_H'].append(delta_H)
             self.monitor['P_acc'].append(P_acc)
@@ -550,7 +550,7 @@ class HMCEvolver(Evolver):
             # Record completed trajectory        
             for fname in self.action.field_names:
                 # TODO: use save_freq here to modify
-                self.field_chain[fname].append(self.action.fields[fname])
+                self.field_chain[fname].append(self.fields[fname])
 
             self.traj_i += 1
             self.traj_chain.append(self.traj_i)
