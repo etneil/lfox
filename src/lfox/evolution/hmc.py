@@ -5,6 +5,9 @@ import jax.numpy as jnp
 import inspect
 import numpy as np
 
+import equinox as eqx
+from typing import Optional
+
 class Evolver(ABC):
     # Any (MCMC) evolver needs:
     # - An action object, which contains the action functional, the set of fields
@@ -65,10 +68,36 @@ class Evolver(ABC):
         pass
 
 
+class EAction(eqx.Module):
+    field_names: list
+    params: dict
+
+    def __init__(self, field_names, params=None):
+        self.field_names = field_names
+
+        if params is None:
+            self.params = {}
+        else:
+            self.params = params
+
+        self.sub_actions = []
+
+    @staticmethod
+    @abstractmethod
+    def _S(fields, params):
+        # This method interfaces to a function which can be JIT compiled and which is friendly
+        # to computing JAX gradients.
+        # Call signature (fields and params) MUST match the names
+        # in the dictionaries.
+        # This is meant to be maximally flexible; can always be overridden to be more efficient
+        # by a subclass.
+        pass
 
 
 
-class Action(ABC):
+
+#class Action(ABC):
+class Action(eqx.Module):
     # An action needs the following to be created:
     # - An ordered list of lattice field names
     # - [optional] A dictionary of non-field parameters the action depends on (e.g. couplings)
@@ -101,7 +130,12 @@ class Action(ABC):
     # within JIT compiled code, which means passing actual numerical fields as function arguments,
     # not having them attached to an Action object.
 
-    def __init__(self, field_names, params=None):
+    field_names: list = eqx.field(static=True)
+    params: dict
+#    sub_actions: Optional[list] = None
+    sub_actions: list
+
+    def __init__(self, field_names, params=None, sub_actions=None):
         self.field_names = field_names
 
         if params is None:
@@ -109,10 +143,13 @@ class Action(ABC):
         else:
             self.params = params
 
-        self.sub_actions = []
-        self.forces = None
+        if sub_actions is None:
+            self.sub_actions = []
+        else:
+            self.sub_actions = sub_actions
 
     # Action density functional
+    @jax.jit
     def S_field(self, fields):
         # Evaluate main action functional
         field_call = [ fields[fname] for fname in self.field_names ]
@@ -130,6 +167,7 @@ class Action(ABC):
     # Note that we DON'T have to be careful about extra indices here;
     # the action density must already be a scalar per-site, so a simple
     # jnp.sum is guaranteed to be a sum over the lattice sites.
+    @jax.jit
     def S(self, fields):
         S_density = self.S_field(fields)
         return jnp.sum(S_density.F)
@@ -430,11 +468,11 @@ class HMCEvolver(Evolver):
     
     # Produce an MD integrator-compatible function
     def delta_mom(self):
-        F = self.action.get_forces()
+#        F = self.action.get_forces()
         def delta_P(X, P):
             result = {}
             for field in self.action.field_names:
-                result[field] = -1 * F(X)[field]
+                result[field] = -1 * self.action.dS(X)[field]
 
             return result
         
