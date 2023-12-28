@@ -101,34 +101,35 @@ class Action(eqx.Module):
     # An action needs the following to be created:
     # - An ordered list of lattice field names
     # - [optional] A dictionary of non-field parameters the action depends on (e.g. couplings)
+    # - [optional] A list of "sub_actions", which will be added in whenever S or S_field is computed
 
     # Although most functions of fields use dictionaries in lfox, we use lists in action definitions.
     # This is to make "aliasing" easy - defining copies of the action with different field names, 
     # for example to create a many-flavor fermion action.
 
-    # The action functional _S should depend on the fields and parameters, and
-    # should be implemented by any inheriting subclass.  It should have signature:
-    # def _S(self, field_list):
-    #    (...)
-    # 
-    # where `fields` is a list of fields.  The function S(self, fields) takes a dictionary
-    # of fields, mapping it to a list using Action.field_names.
-    
-    # JIT compilation of the action is HIGHLY RECOMMENDED.  This should be done using a "partial"
-    # decorator to treat the action "self" as static, i.e.
+    # There is a single abstract method in this class, the action functional _S.  This
+    # functional should depend on the fields and the parameters, and must be implemented
+    # by any inheriting subclass as a STATIC method.  It should have signature:
     # @staticmethod
-    # @partial(jax.jit, static_argnums=(0,))
-    # def _S(self, field_list):
+    # def _S(fields, params):
+    #   (...)
+    #
+    # where `fields` is a list of fields.  The functions S(self, fields) and S_field(self, fields)
+    # take dictionaries of fields, mapping them to lists for _S(fields, params) using
+    # Action.field_names.
+    
+    # JIT compilation of the action is HIGHLY RECOMMENDED!  This can be done simply
+    # by adding the jax.jit decorator, i.e.
+    # 
+    # @staticmethod
+    # @jax.jit
+    # def _S(fields, params):
     #    (...)
-
+    #
+    # (Note that the order of decorators is important, don't swap them!)
 
     # Actions can be created by combining two actions together using += or +.
     # This uses the sub_actions parameter.
-
-    # TODO: I should decouple the action itself from the fields.  The action needs to know the NAMES
-    # of the fields, but it's mainly providing function calls to be used by JAX that I want to use
-    # within JIT compiled code, which means passing actual numerical fields as function arguments,
-    # not having them attached to an Action object.
 
     field_names: list = eqx.field(static=True)
     params: dict
@@ -148,7 +149,7 @@ class Action(eqx.Module):
         else:
             self.sub_actions = sub_actions
 
-    # Action density functional
+    # Action density functional; returns S as a LatticeField, i.e. not summed.
     @jax.jit
     def S_field(self, fields):
         # Evaluate main action functional
@@ -172,90 +173,10 @@ class Action(eqx.Module):
         S_density = self.S_field(fields)
         return jnp.sum(S_density.F)
 
-    @partial(jax.jit, static_argnums=(0,))
+#    @partial(jax.jit, static_argnums=(0,))
+    @jax.jit
     def dS(self, fields):
         return jax.grad(self.S)(fields)
-
-
-    def get_forces(self, recompute=False):
-        if recompute or self.forces == None:
-            self._compute_forces()
-
-        return self.forces
-
-    @staticmethod
-    def _safe_call(F, dicts):
-        F_sig = inspect.signature(F)
-
-        call = {}
-        for D in dicts:
-            for k in D.keys():
-                if k in F_sig.parameters:
-                    call[k] = D[k]
-        return F(**call)
-
-
-
-
-
-    def _compute_forces(self):
-        # Hmm, is it really this easy?
-        self.forces = jax.jit(jax.grad(lambda fields: self.S(fields)))
-        return
-
-        """
-        action_sig = inspect.signature(self._Sjax)
-        action_pars = list(action_sig.parameters)
-
-        grads = {}
-
-        for fname in self.fields.keys():
-            grads[fname] = []
-
-            # Compute gradient of total action with respect to each field
-            # Start with the main action
-            field_i = action_pars.index(fname)
-            grads[fname].append(jax.grad(self._S, argnums=field_i))
-
-            for subact in self.sub_actions:
-                subact_pars = list(inspect.signature(subact._S).parameters)
-                field_i = subact_pars.index(fname)
-                grads[fname].append(jax.grad(subact._S, argnums=field_i))
-        """
-
-        grads = {}
-        
-        # Collect all unique field names, including subactions
-        all_field_names = set(self.field_names)
-        for subact in self.sub_actions:
-            all_field_names = all_field_names | subact.field_names
-
-        # Compute gradient w.r.t. each field
-        for fname in all_field_names:
-            grads[fname] = []
-            if fname in self.field_names:
-                field_i = self.field_names.index(fname)
-                grads[fname].append(jax.jit(jax.grad(self._S, argnums=field_i)))
-            
-            for subact in self.sub_actions:
-                if fname in subact.field_names:
-                    field_i = self.field_names.index(fname)
-                    grads[fname].append(jax.jit(jax.grad(subact._S, argnums=field_i)))
-        
-        # Combine into a single function that returns a dictionary matching self.fields
-        def force_func(fields):
-            forces = {}
-            for fname in fields.keys():
-                total_force = []
-                for G in grads[fname]:
-                    total_force.append(self._safe_call(G, (fields, self.params)))
-
-                forces[fname] = jnp.sum(total_force)
-
-            return forces
-
-        self.forces = force_func
-
 
     @staticmethod
     @abstractmethod
@@ -313,8 +234,6 @@ class Action(eqx.Module):
         # Register the subaction
         self.sub_actions.append(other)
 
-        # Recompute forces since action has changed
-        self._compute_forces()
 
 class MDIntegrator():
 
