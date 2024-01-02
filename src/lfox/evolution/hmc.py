@@ -245,13 +245,13 @@ class Action(eqx.Module):
         self.sub_actions.append(other)
 
 
-class MDIntegrator():
-
-    def __init__(self, eps, Nstep):
-        self.eps = eps
-        self.Nstep = Nstep
+#class MDIntegrator():
+class MDIntegrator(eqx.Module):
+    eps: float
+    Nstep: int
         
-        self.traj_length = eps * Nstep
+    def traj_length(self):
+        return self.eps * self.Nstep
 
     @staticmethod
     @jax.jit
@@ -400,8 +400,9 @@ class HMCEvolver(Evolver):
 #        F = self.action.get_forces()
         def delta_P(X, P):
             result = {}
+            derivs = self.action.dS(X)
             for field in self.action.field_names:
-                result[field] = -1 * self.action.dS(X)[field]
+                result[field] = -1 * derivs[field]
 
             return result
         
