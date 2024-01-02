@@ -273,7 +273,7 @@ class LeapfrogIntegrator(MDIntegrator):
     def integrate(self, delta_X, delta_P, X, P):
         return self._integrate(delta_X, delta_P, X, P)
 
-    @partial(jax.jit, static_argnums=(0,1,2))
+    @partial(jax.jit, static_argnums=(1,2))
     def _integrate(self, delta_X, delta_P, X, P):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
@@ -296,13 +296,9 @@ class LeapfrogIntegrator(MDIntegrator):
     
 
 class OmelyanIntegrator(MDIntegrator):
+    xi: float = 0.1931833
 
-    def __init__(self, eps, Nstep, xi=0.1931833):
-        self.xi = xi
-
-        super().__init__(eps=eps, Nstep=Nstep)
-
-    @partial(jax.jit, static_argnums=(0,1,2))
+    @partial(jax.jit, static_argnums=(1,2))
     def integrate(self, delta_X, delta_P, X, P):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
