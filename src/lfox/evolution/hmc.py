@@ -4,6 +4,8 @@ import jax
 import jax.numpy as jnp
 import inspect
 import numpy as np
+import dataclasses
+import copy
 
 import equinox as eqx
 from typing import Optional
@@ -201,12 +203,19 @@ class Action(eqx.Module):
 
         return newAct
     
+    
     def __copy__(self):
+        new_subact = copy.deepcopy(self.sub_actions)
+        return dataclasses.replace(self, sub_actions=new_subact)
+
+
         cls = self.__class__
         new = cls.__new__(cls)
         new.__dict__.update(self.__dict__)
 
-        new.field_names = self.field_names.copy()
+        return new
+
+#        new.field_names = self.field_names.copy()
 
         # Populate sub-action list with copies to avoid
         # unintentional side effects
@@ -218,6 +227,7 @@ class Action(eqx.Module):
 
     def copy(self):
         return self.__copy__()
+    
 
     def add_subaction(self, other):
         # Combine the parameters
