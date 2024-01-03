@@ -245,7 +245,6 @@ class Action(eqx.Module):
         self.sub_actions.append(other)
 
 
-#class MDIntegrator():
 class MDIntegrator(eqx.Module):
     eps: float
     Nstep: int
@@ -429,7 +428,12 @@ class HMCEvolver(Evolver):
         return field_rev
     
     def MD_traj(self, fields, pi_fields):
-        return self._MD_traj(fields, pi_fields)
+#        return self._MD_traj(fields, pi_fields)
+
+        fields, pi_fields, H_new, H_old = self._MD_traj_2(fields, pi_fields)
+        delta_H, P_acc = self._compute_AR(H_new, H_old)
+        return fields, pi_fields, delta_H, P_acc
+
     
     @partial(jax.jit, static_argnums=(0,))
     def _MD_traj(self, fields, pi_fields):
@@ -451,6 +455,31 @@ class HMCEvolver(Evolver):
         P_acc = jnp.exp(-delta_H)
 
         return fields, pi_fields, delta_H, P_acc
+    
+    # Trying a different division/JIT scheme
+    def _MD_traj_2(self, fields, pi_fields):
+        S_old = self.action.S_field(fields)
+        H_old = self._H_density(list(pi_fields.values()), S_old)
+
+        fields, pi_fields = self.integrator.integrate(
+            delta_X = self.delta_X,
+            delta_P = self.delta_P,
+            X = fields,
+            P = pi_fields,
+        )
+
+        S_new = self.action.S_field(fields)
+        H_new = self._H_density(list(pi_fields.values()), S_new)
+
+        return fields, pi_fields, H_new, H_old
+
+    @staticmethod
+    @jax.jit
+    def _compute_AR(H_new, H_old):
+        delta_H = jnp.sum(H_new.F - H_old.F)
+        P_acc = jnp.exp(-delta_H)
+
+        return delta_H, P_acc
 
     def get_momentum(self, pi_fields, traj):
         return self._get_momentum(pi_fields, traj)
