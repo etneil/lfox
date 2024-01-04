@@ -331,13 +331,14 @@ class OmelyanIntegrator(MDIntegrator):
         return X, P
 
 
+from equinox import AbstractVar
 
 class EvolverRewrite(eqx.Module):
     action: Action
     seed: int
     fields: dict
     observables: dict
-    save_freq: int
+    save_freq: AbstractVar[int]
 
     # Should these not be dataclass properties?
     #rng_key: jax.random.PRNGKey
@@ -351,6 +352,7 @@ class EvolverRewrite(eqx.Module):
 
 class HMCRewrite(EvolverRewrite):
     integrator: MDIntegrator
+    save_freq: int = 1
 
     def evolve(self):
         print("OK")
