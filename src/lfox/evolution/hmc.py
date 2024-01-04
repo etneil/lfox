@@ -297,8 +297,12 @@ class LeapfrogIntegrator(MDIntegrator):
 class OmelyanIntegrator(MDIntegrator):
     xi: float = 0.1931833
 
-    @partial(jax.jit, static_argnums=(1,2))
+    # Temporary intermediate function for profiling
     def integrate(self, delta_X, delta_P, X, P):
+        return self._integrate(delta_X, delta_P, X, P)
+
+    @partial(jax.jit, static_argnums=(1,2))
+    def _integrate(self, delta_X, delta_P, X, P):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
 
@@ -328,10 +332,36 @@ class OmelyanIntegrator(MDIntegrator):
 
 
 
+class EvolverRewrite(eqx.Module):
+    action: Action
+    seed: int
+    fields: dict
+    observables: dict
+    save_freq: int
+
+    # Should these not be dataclass properties?
+    #rng_key: jax.random.PRNGKey
+
+    @abstractmethod
+    def evolve(self):
+        pass    
+
+
+
+
+class HMCRewrite(EvolverRewrite):
+    integrator: MDIntegrator
+
+    def evolve(self):
+        print("OK")
+
+
+
 
 class HMCEvolver(Evolver):
 
-    def __init__(self, action, seed, init_fields, integrator, traj_init=0, observables=None, save_freq=1):
+    def __init__(self, action, seed, init_fields, integrator, 
+                 traj_init=0, observables=None, save_freq=1):
         self.integrator = integrator
         self.monitor = {
             'delta_H': [],
@@ -340,7 +370,6 @@ class HMCEvolver(Evolver):
         }
 
         self.traj_init = traj_init      # Initial trajectory number
-        self.traj_i = traj_init         # Current trajectory number
         self.traj_chain = [ traj_init ]
 
         super().__init__(action=action, seed=seed, observables=observables, init_fields=init_fields,
@@ -428,7 +457,7 @@ class HMCEvolver(Evolver):
         return field_rev
     
     def MD_traj(self, fields, pi_fields):
-#        return self._MD_traj(fields, pi_fields)
+        return self._MD_traj(fields, pi_fields)
 
         fields, pi_fields, H_new, H_old = self._MD_traj_2(fields, pi_fields)
         delta_H, P_acc = self._compute_AR(H_new, H_old)
@@ -495,6 +524,9 @@ class HMCEvolver(Evolver):
         return pi_traj
 
     def evolve(self, ntraj=1, warmup=False):
+        # Record starting trajectory
+        start_traj = self.traj_chain[-1]
+
         # Draw accept/reject numbers for this run
         self.rng_key, subkey = jax.random.split(self.rng_key)
         r_accept = np.array(jax.random.uniform(subkey, shape=(ntraj,)))
@@ -502,7 +534,7 @@ class HMCEvolver(Evolver):
         # Heatbath momentum refresh
         self.mom_refresh(ntraj=ntraj)
 
-        for traj in range(ntraj):
+        for traj in range(1,ntraj+1):
 
             # Store old field values
 #            prev_fields = self.action.copy_fields()
@@ -529,8 +561,8 @@ class HMCEvolver(Evolver):
             """
             self.fields, pi_traj, delta_H, P_acc = self.MD_traj(self.fields, pi_traj)
 
-            self.monitor['delta_H'].append(delta_H)
-            self.monitor['P_acc'].append(P_acc)
+            self.monitor['delta_H'].append(float(delta_H))
+            self.monitor['P_acc'].append(float(P_acc))
 
             accept = True
             if not warmup:  # Warmups always accept!
@@ -548,17 +580,16 @@ class HMCEvolver(Evolver):
             # Record completed trajectory        
             for fname in self.action.field_names:
                 # TODO: use save_freq here to modify
-                self.field_chain[fname].append(self.fields[fname])
-
-            self.traj_i += 1
-            self.traj_chain.append(self.traj_i)
+                if ( self.save_freq == 1) or (((start_traj + traj) % self.save_freq) == 0):
+                    self.field_chain[fname].append(self.fields[fname])
+                    self.traj_chain.append(start_traj + traj)
 
             # Measure observables
             if self.observables is not None:
                 for obs in self.observables.keys():
                     obs_f, freq = self.observables[obs]
 
-                    if (freq == 1) or (self.traj_i - self.traj_init) % freq == 0:
+                    if (freq == 1) or (traj + start_traj) % freq == 0:
                         self.obs_chain[obs].append(obs_f(self.fields, self.action.params))
 
         
