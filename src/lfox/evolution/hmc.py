@@ -412,7 +412,7 @@ class HMCEvolver(Evolver):
         for fname in self.action.field_names:
             pi_shape = (ntraj,) + self.fields[fname].F.shape
             self.rng_key, fresh_pi = self._mom_heatbath(pi_shape, self.rng_key)
-            self.pi_fields[fname].F = fresh_pi
+            self.pi_fields[fname] = fresh_pi
 
 
     @staticmethod
@@ -521,7 +521,7 @@ class HMCEvolver(Evolver):
         pi_traj = {}
         for fname in pi_fields.keys():
             pi_traj[fname] = pi_fields[fname].copy()
-            pi_traj[fname].F = pi_traj[fname].F[traj]
+#            pi_traj[fname].F = pi_traj[fname].F[traj]
 
         return pi_traj
 
