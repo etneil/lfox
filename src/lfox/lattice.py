@@ -56,12 +56,19 @@ tree_util.register_pytree_node(
 class Lattice(eqx.Module):
     st_dims: tuple[int]
     _dims: tuple[int] = eqx.field(init=False)
+    _bc_coords: jax.Array = eqx.field(init=False, static=True)
+#    st_dims: jax.Array = eqx.field(converter=jax.numpy.asarray)
+#    _dims: jax.Array = eqx.field(init=False)
 
     def __post_init__(self):
         # Dimensions of the physical lattice
         # May differ from space-time dims (e.g.
         # non-trivial unit cell)
         self._dims = self.st_dims
+
+        # Field used for application of boundary conditions in LatticeFields
+        self._bc_coords = jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij')
+
 
 
 class SquareLattice(Lattice):
@@ -99,7 +106,11 @@ class HoneycombLattice(Lattice):
     unit_cell: ClassVar[tuple[int]] = (0, 1)
 
     def __post_init__(self):
+#        self._dims = jnp.concatenate((self.st_dims, jnp.asarray((len(self.unit_cell),))))
         self._dims = self.st_dims + (len(self.unit_cell),)
+
+        # Field used for application of boundary conditions in LatticeFields
+        self._bc_coords = jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij')
 
     def shift(self, field, axis, shift=1):
         # Shift within the unit cell too if we are moving in axis 0
@@ -115,10 +126,11 @@ class HoneycombLattice(Lattice):
             return jnp.roll(field, shift=shift, axis=axis)
 
 class LatticeField(eqx.Module):
-    lattice: Lattice
+    lattice: Lattice = eqx.field(static=True)
     F: jax.Array = eqx.field(converter=jax.numpy.asarray)
-    bc: Optional[jax.Array] = eqx.field(default=(), converter=jax.numpy.asarray)
-    indices: Optional[tuple[int]] = ()
+#    bc: Optional[jax.Array] = eqx.field(default=(), converter=jax.numpy.asarray)
+    bc: Optional[tuple[int]] = eqx.field(default=(), static=True)
+    indices: Optional[tuple[int]] = eqx.field(default=(), static=True)
 
     def __post_init__(self):
         # Allow e.g. unit field by just passing 1,
@@ -135,7 +147,8 @@ class LatticeField(eqx.Module):
     def _set_default_BC(self):
         if len(self.bc) == 0:
             # Default is periodic BC = [1,1,1,...]
-            self.bc = jnp.ones(len(self.lattice.st_dims))
+            self.bc = (1,) * len(self.lattice.st_dims)
+#            self.bc = jnp.ones(len(self.lattice.st_dims))
         else:
             assert len(self.bc) == len(self.lattice.st_dims)
 #            for B in self.bc:
@@ -157,19 +170,27 @@ class LatticeField(eqx.Module):
         return len(self.lattice._dims)
 
     @staticmethod
-    def _field_op(f):
-        def op(self, other):
-            o = getattr(other, 'F', other)
-            new_F = f(self.F, o)
+    def _field_op(f, rev=False):
+        if rev:
+            def op(self, other):
+                o = getattr(other, 'F', other)
+                new_F = f(o, self.F)
 
-            return self.copy_new_F(new_F)
+                return self.copy_new_F(new_F)
+        else:
+            def op(self, other):
+                o = getattr(other, 'F', other)
+                new_F = f(self.F, o)
+
+                return self.copy_new_F(new_F)
         
         return op
 
     __add__ = _field_op(operator.add)
+    __radd__ = _field_op(operator.add, rev=True)
     __sub__ = _field_op(operator.sub)
     __mul__ = _field_op(operator.mul)
-    __rmul__ = _field_op(operator.mul)
+    __rmul__ = _field_op(operator.mul, rev=True)
     __truediv__ = _field_op(operator.truediv)
     __pow__ = _field_op(operator.pow)
     
@@ -179,24 +200,61 @@ class LatticeField(eqx.Module):
 
     # TODO: more arithmetic?
 
-    # JIT compiling this didn't seem useful in initial tests, at least as written...
-    #@partial(jax.jit, static_argnums=(1,))
-    @jax.jit
+    @staticmethod
+    @partial(jax.jit, static_argnums=(1,2,3,4,5))
+    def _nn_field(field, lattice, axis, shift, bc, st_dims):
+        print("st_dims", st_dims)
+        nn_shift = lattice.shift(field, axis=axis, shift=shift)
+
+        # Apply boundary conditions globally with some arcane NumPy manipulations
+        BC_factor = bc[axis]
+#        coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in st_dims], indexing='ij')[axis]
+        coords_ax = lattice._bc_coords[axis]
+
+        _, winding = jnp.divmod(coords_ax+shift, st_dims[axis])
+        BC_field = (BC_factor)**(winding)
+
+        return nn_shift * BC_field.reshape(st_dims)
+
+    def nn_field(self, axis, shift=1):
+        shifted_field = self._nn_field(
+            self.F, 
+            lattice=self.lattice,
+            axis=axis,
+            shift=shift,
+            bc=self.bc,
+            st_dims=self.st_dims(),
+        )
+
+        return self.copy_new_F(shifted_field)
+
+    """
+    @partial(jax.jit, static_argnums=(1,))
     def nn_field(self, axis, shift=1):
         nn_shift = self.lattice.shift(self.F, axis=axis, shift=shift)
 
         # Apply boundary conditions globally with some arcane NumPy manipulations
         BC_factor = self.bc[axis]  # 1 or -1
-        coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in self.lattice.dims], indexing='ij')[axis]
 
-        _, winding = jnp.divmod(coords_ax+shift, self.lattice.dims[axis])
+        # Unpack for JIT compilation
+        def grid_base(i, cgrid):
+            Li = self.lattice.st_dims[i]
+            return cgrid + [jnp.arange(Li)]
+        
+        cgrid = jax.lax.fori_loop(0, len(self.lattice.st_dims), grid_base, [])
+        coords_ax = jnp.meshgrid(*cgrid, indexing='ij')[axis]
+
+#        coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in self.lattice.st_dims], indexing='ij')[axis]
+
+        _, winding = jnp.divmod(coords_ax+shift, self.lattice.st_dims[axis])
         BC_field = (BC_factor)**(winding)
 
         LF = self.copy()
-        LF.F = nn_shift * BC_field.reshape(self.st_dims)
+        LF.F = nn_shift * BC_field.reshape(self.st_dims())
 
         return LF
-    
+    """
+
     def __copy__(self):
         cls = self.__class__
         new = cls.__new__(cls)

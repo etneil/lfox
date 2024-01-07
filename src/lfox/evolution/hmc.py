@@ -134,7 +134,7 @@ class Action(eqx.Module):
     # This uses the sub_actions parameter.
 
     field_names: list = eqx.field(static=True)
-    params: dict
+    params: dict = eqx.field(static=True)
 #    sub_actions: Optional[list] = None
     sub_actions: list
 
