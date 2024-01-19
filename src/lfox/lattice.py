@@ -67,8 +67,17 @@ class Lattice(eqx.Module):
         self._dims = self.st_dims
 
         # Field used for application of boundary conditions in LatticeFields
-        self._bc_coords = jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij')
+        self._bc_coords = tuple(jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij'))
 
+    # Override equality since it's using the bc_coords field when it shouldn't be
+    def __eq__(self, other):
+        if not isinstance(other, Lattice):
+            raise NotImplementedError
+        
+        return self.st_dims == other.st_dims
+
+    def __hash__(self):
+        return hash(self.st_dims)
 
 
 class SquareLattice(Lattice):
@@ -203,7 +212,6 @@ class LatticeField(eqx.Module):
     @staticmethod
     @partial(jax.jit, static_argnums=(1,2,3,4,5))
     def _nn_field(field, lattice, axis, shift, bc, st_dims):
-        print("st_dims", st_dims)
         nn_shift = lattice.shift(field, axis=axis, shift=shift)
 
         # Apply boundary conditions globally with some arcane NumPy manipulations
