@@ -56,7 +56,7 @@ tree_util.register_pytree_node(
 class Lattice(eqx.Module):
     st_dims: tuple[int]
     _dims: tuple[int] = eqx.field(init=False)
-    _bc_coords: jax.Array = eqx.field(init=False, static=True)
+    _bc_coords: jax.Array = eqx.field(init=False)
 #    st_dims: jax.Array = eqx.field(converter=jax.numpy.asarray)
 #    _dims: jax.Array = eqx.field(init=False)
 
@@ -67,6 +67,7 @@ class Lattice(eqx.Module):
         self._dims = self.st_dims
 
         # Field used for application of boundary conditions in LatticeFields
+        # self._bc_coords = tuple(jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij'))
         self._bc_coords = tuple(jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij'))
 
     # Override equality since it's using the bc_coords field when it shouldn't be
@@ -144,7 +145,9 @@ class LatticeField(eqx.Module):
     def __post_init__(self):
         # Allow e.g. unit field by just passing 1,
         # broadcast to size of lattice
-        if self.F.shape == ():
+        
+        if type(self.F) != jnp.array:
+#        if self.F.shape == ():
             self.F = self.F * jnp.ones(self.dims())
 
         self._set_default_BC()
