@@ -46,3 +46,87 @@ Concrete next ~week of work:
 5. *Then* start on gauge fields — `WilsonDiracOp.shift_fermion` is already the right hook.
 
 After that, the architecture earns the right to grow.
+
+## Forward-looking design proposals
+
+Two design changes worth making *before* the next round of physics, since both touch APIs that will harden as more code is written on top.
+
+### Named internal indices
+
+Replace the positional `indices: tuple[int]` on `LatticeField` with named, ordered axes:
+
+```python
+class LatticeField(eqx.Module):
+    lattice: Lattice = eqx.field(static=True)
+    F: jax.Array
+    bc: tuple[int, ...] = eqx.field(static=True)
+    # ordered, named internal axes following the spacetime axes in F
+    axes: tuple[tuple[str, int], ...] = eqx.field(static=True, default=())
+
+    def axis_pos(self, name: str) -> int:  # static, called at trace time
+        d = len(self.lattice._dims)
+        for i, (n, _) in enumerate(self.axes):
+            if n == name:
+                return d + i
+        raise KeyError(name)
+```
+
+Operators target axes by name but compile to positional ops:
+
+```python
+@jax.jit
+def gamma_apply(field, gamma_mat):
+    pos = field.axis_pos('spin')          # static, resolved at trace
+    return field.copy_new_F(
+        jnp.tensordot(gamma_mat, field.F, axes=[[1], [pos]]).moveaxis(0, pos)
+    )
+```
+
+**Why it doesn't cost performance:** the name→position map is `static=True`, so `axis_pos` runs in Python during tracing and disappears from the compiled HLO. The jaxpr is byte-identical to a hand-written positional einsum (verifiable with `jax.make_jaxpr`). The one rule: never build an einsum string from a runtime value inside a jit — since names live on the static field type, that won't happen by accident.
+
+**Why it composes well with sharding:** you partition spacetime axes via `Mesh` + `NamedSharding`/`PartitionSpec`; internal indices (spin/color) are typically replicated and contracted locally. Named internal axes makes that boundary explicit and self-documenting. If color ever needs sharding (very large N), it's a one-line spec change because the axis name maps to a known static position.
+
+**Why now:** `Dirac4DFermionField._inner_product` already hardcodes `'...i,...i'` assuming spin is the only trailing axis. The moment a gauged Dirac op adds a color index, every einsum in the fermion code needs to remember positional order. Named axes prevents a class of silent contraction bugs before they get written.
+
+### Per-term action params (drop the flat-merge)
+
+`Action.add_subaction` currently merges sub-action `params` into a single flat dict (last-write-wins, TODO flagged). Replace with per-sub-action params: each `Action` carries its own `params`, and `S_field` walks sub-actions calling each with its own slice.
+
+Authoring ergonomics are preserved verbatim:
+
+```python
+S = GaugeAction(field_names=['U'], params={'beta': 5.0})
+S = S + WilsonAction(field_names=['psi'], params={'kappa': 0.13})
+S = S + ScalarAction(field_names=['phi'], params={'lam': 0.1, 'm2': -2.0})
+```
+
+The case the flat dict can't handle today falls out for free:
+
+```python
+psi1 = WilsonAction(field_names=['psi_1'], params={'kappa': 0.13})
+psi2 = WilsonAction(field_names=['psi_2'], params={'kappa': 0.14})
+S = gauge_act + psi1 + psi2   # two κ's coexist; flat-merge would clobber
+```
+
+**Pair this with committing to dicts on the field side**, and handle many-flavor aliasing with an explicit rename map instead of positional list-vs-dict ordering:
+
+```python
+psi2_act = WilsonAction(field_names=['psi'], params={'kappa': 0.14}) \
+            .rebind({'psi': 'psi_2'})
+```
+
+`rebind` returns a new action whose `S_field` does `fields[rebind_map.get(name, name)]` — one indirection at trace time, zero at runtime. The list-vs-dict hybrid goes away; the multi-flavor motivation is satisfied; `_S`, `S`, `S_field` all take dicts.
+
+**User-visible change:** `S.params['kappa']` from outside is gone. Replace with `S.with_param('kappa', 0.14)` returning a new action (pure-functional, JIT-safe; sub-action targeting via path). Notebooks that mutate `params` in place need updating — but those mutations already conflict with `params` being `static=True`, so they're fragile today.
+
+**Why now:** with gauge β, Wilson κ, pseudofermion mass, and eventually multi-flavor all landing at once, the flat-merge collision is going to bite during the gauge-field push. Cleaner to remove the foot-gun first.
+
+### Open question to resolve before gauge fields
+
+How does a `LinkField` (or `geometry='link'` tag on `LatticeField`) interact with the integrator? Sketch:
+
+- Each field type knows how to advance itself given a tangent-space momentum: `field.advance(p, dt)`. Scalars use `+`; group-valued links use `U → exp(i·dt·P)·U`.
+- `MDIntegrator.update` calls `field.advance(...)` instead of `+`, dispatching per-field.
+- Forces from `jax.grad` need to land in the algebra, not the group — either parameterize-and-exponentiate (cleanest for autodiff) or carry-and-project. Decide before the first link-valued action lands.
+
+If this gets sketched before fermions get heavier, scalar HMC remains a clean special case. If not, expect a parallel `GaugeHMC` evolver to appear and the same `HMCEvolver` vs `HMCRewrite` bifurcation to repeat one level up.
