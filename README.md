@@ -9,6 +9,8 @@
 
 ## Installation
 
+_(using UV now - update me!)_
+
 ```console
 pip install lfox
 ```
