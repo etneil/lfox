@@ -6,15 +6,15 @@
 
 The design goal is composability and ease of modification (new theories, novel field content, exotic gauge groups) at modest cluster scale, where specialized C++ frameworks (Grid/QUDA/Chroma) don't compete because they don't cover the target physics. Reasonable performance on clusters via JAX sharding is the scaling story; leadership-class facility competitiveness is explicitly *not* a goal.
 
-Apple Silicon is a desired desktop target. `jax-metal` is effectively dead and not worth relying on. The medium-term hedge is to **own the module abstraction** (drop direct `eqx.Module` inheritance in core types) so a second backend — MLX today, IREE/StableHLO via PJRT later — becomes a contained project rather than an architectural overhaul. No commitment yet to building the second backend; the durable investment is the seam.
+Apple Silicon is a desired desktop target. `jax-metal` is effectively dead and not worth relying on. The path forward is to **wait for upstream JAX-compatible backends** to mature — community MLX-as-JAX-backend efforts, IREE/StableHLO via PJRT — rather than build a parallel MLX backend ourselves. Those paths are JAX-compatible by construction, so no architectural seam is needed; staying idiomatic in JAX *is* the hedge. A narrower DLPack interop with MLX for post-sampling observables (outside autodiff, outside JIT) is a viable side path if a specific analysis kernel motivates it.
 
 ML-library interop is a plus, not a driver. Most LGT+ML prior art is PyTorch (normalizing flows, neural samplers), but the autodiff-for-HMC-forces win is what makes JAX the right primary choice; we're not switching to PyTorch for ecosystem reasons.
 
 ## Principles
 
 - **Freeze new physics until the foundation converges.** No gauge fields, no new fermion machinery, until the legacy migration is done and tests exist.
-- **Own the module abstraction.** Core types should not directly inherit `eqx.Module`. A thin frozen-dataclass + pytree-registration shim of our own gives the same ergonomics and keeps backends swappable.
-- **Cluster sharding stays JAX-only and lives *above* any future backend seam.** Don't try to abstract `pmap`/`shard_map` across backends; MLX has no real distributed story and pretending otherwise is a trap.
+- **Stay idiomatic in JAX.** Core types continue to inherit `eqx.Module`. With a parallel-backend hedge no longer the strategy, Equinox earns its place — surface use here (`Module`, `field(static=...)`, `field(converter=...)`, `field(init=False)`) is small and the dependency is near-free. Revisit only if the upstream Apple-Silicon path collapses and we are forced to build a parallel backend.
+- **Cluster sharding stays JAX-native.** `pmap`/`shard_map` are the scaling story. Nothing to abstract across.
 - **Tests pin physics invariants, not implementations.** Translation invariance, leapfrog reversibility, `<exp(-ΔH)> = 1`, BC winding signs, solver convergence on known matrices. Cheap to write, enables aggressive refactors.
 
 ## Ordered work
@@ -45,9 +45,12 @@ Heavy end-to-end physics tests (full Schaefer reproduction, multi-minute runs) s
 - Off-by-one in `HMCEvolver.evolve` (`hmc.py:626,631,666`). `r_accept` indexing is wrong: index 0 unused, index `ntraj` OOB. Likely moot if `HMCEvolver` is deleted (see step 4).
 - `Action.__copy__` has unreachable code after `return` (`hmc.py:211-226`).
 - `LatticeField.__post_init__` uses `type(self.F) != jnp.array` (`lattice.py:149`) — always true. Use `isinstance(self.F, jax.Array)`.
+- `Lattice.__eq__` raises `NotImplementedError` (`lattice.py:80-81`) instead of returning the `NotImplemented` singleton — `lattice == 5` explodes rather than returning `False`.
 - `MRSolver.solve` is a host-side Python `while` loop (`solver.py:19`). Convert to `jax.lax.while_loop` with a residual predicate so the inner loop doesn't pay dispatch cost per step.
 - `HoneycombLattice.shift` FIXME — fix or mark explicitly unsupported.
 - `Action.params` is `static=True` but mutated by `add_subaction` (`hmc.py:235`). Either freeze post-construction or stop marking static.
+- `LatticeField.copy_new_F` (`lattice.py:288-294`) — simplify the `cls.__new__` + `__dict__.update` + `dataclasses.replace` dance to a single `dataclasses.replace(self, F=new_F)`.
+- Delete the commented-out alternate `nn_field` block (`lattice.py:254-279`).
 
 ### 4. Finish the Old → new migration
 
@@ -56,24 +59,14 @@ Heavy end-to-end physics tests (full Schaefer reproduction, multi-minute runs) s
 - Delete `HMCEvolver`. Re-add its diagnostic instrumentation (`monitor`, `field_chain`, `obs_chain`) as a thin Python wrapper around `HMCRewrite`. Two parallel HMC classes is the wrong steady state.
 - Resolve the list-vs-dict split at the `Action` boundary. Pick one — dicts everywhere with a lightweight rename layer for flavor aliasing is probably cleanest. Hybrid is the worst of both.
 
-### 5. Own the module abstraction
-
-Replace direct `eqx.Module` inheritance in `Lattice` / `LatticeField` / `Action` / integrators with a small in-tree `Module` base:
-
-- Frozen dataclass-style.
-- Explicit `tree_flatten` / `tree_unflatten` plus a `replace(**kw)` helper.
-- Pytree registration goes through a backend-selectable hook (today: JAX; tomorrow: whatever).
-
-This is the single architectural change that makes a second backend possible later. Doing it in the same pass as the legacy migration is much cheaper than coming back for a third pass — the tests from step 2 are the safety net that lets it happen aggressively.
-
-`Equinox`-the-library can still be used for things it's uniquely good at (`filter_jit`-style helpers); the change is that *core types* no longer inherit from `eqx.Module`.
-
-### 6. *Then* new physics
+### 5. *Then* new physics
 
 Gauge fields are the first real addition. `WilsonDiracOp.shift_fermion` is already the right hook for link variables. After that, the architecture has earned the right to grow.
 
 ## Deferred / optional
 
-- **MLX backend.** Realistic to build on top of the owned `Module` abstraction; ~4–8 weeks of focused work plus ongoing ~10–20% maintenance tax. Not worth committing to until step 5 is done and Apple's signal on MLX investment is still positive.
-- **IREE / StableHLO via PJRT as Apple Silicon path.** Watch-this-space. Currently bleeding edge; not turn-key for interactive Jupyter workflow. The owned-Module seam protects against either MLX or StableHLO not panning out — the seam is the durable bet, the specific backend is disposable.
+- **Parallel MLX backend.** Considered and rejected: a dual backend either duplicates the core Module / HMC / integrator layer or forces a lowest-common-denominator `xnp` shim that loses JAX's jit / static_argnums / Equinox ergonomics. The kernels likeliest to benefit from hand-tuned MLX (Wilson Dslash, fermion solvers) sit inside HMC's gradient path, where calling MLX from JIT'd JAX requires a manual `custom_vjp` and risks host round-trip overhead via `pure_callback`. Revisit only if every upstream Apple-Silicon path fails to mature.
+- **MLX-via-DLPack for post-sampling analysis.** Narrower and viable: bridge JAX↔MLX with DLPack for non-differentiated observables computed outside any JIT. Treat MLX as an analysis-side library that happens to share memory — no architectural changes required. Pursue only if a concrete observable kernel motivates it. Validate first that DLPack handoff is actually zero-copy on the same device; that's the load-bearing assumption.
+- **Community MLX-as-JAX-backend / IREE / StableHLO via PJRT.** The actual hoped-for Apple-Silicon path. Watch-this-space; bleeding edge today, not turn-key for interactive Jupyter. By construction these are JAX-compatible, so no architectural seam is needed.
+- **Own the module abstraction (drop `eqx.Module` from core types).** Was a hedge for parallel-backend swappability; with that off the table, the work is unmotivated. Reopen only if the upstream-backend bet fails *and* a parallel backend becomes necessary.
 - **PyTorch port.** Not recommended. Better Apple Silicon and ML interop, but the pure-functional `Action` / immutable `LatticeField` design swims upstream of PyTorch's mutable-module idiom. 2–3 month rewrite for a worse fit.

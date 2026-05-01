@@ -32,6 +32,9 @@ Bottom line up front: the *core* abstraction (Equinox-backed `Lattice` + `Lattic
 - `LatticeField.__post_init__` uses `type(self.F) != jnp.array` (`lattice.py:149`). `jnp.array` is a function, not a type — this comparison is always `True`. Use `isinstance(self.F, jax.Array)` or just always broadcast.
 - `LeapfrogIntegrator._integrate` / `OmelyanIntegrator._integrate` pass `delta_X`/`delta_P` as static args (`static_argnums=(1,2)`) — this means *each* call to `HMCEvolver.delta_mom()` (which builds a fresh closure) triggers a recompile. `make_deltas()` saves them, which is the right intent, but `HMCRewrite.delta_mom`/`delta_fields` rebuild closures every `evolve` — worth checking with `jax.jit`'s cache.
 - `Action.params` being `static=True` while it's mutated in `add_subaction` (`hmc.py:235`) is a footgun. Either freeze `params` or stop mutating it post-construction.
+- `Lattice.__eq__` (`lattice.py:80-81`) raises `NotImplementedError` instead of returning the `NotImplemented` singleton. `lattice == 5` explodes rather than returning `False`. One-line fix.
+- `LatticeField.copy_new_F` (`lattice.py:288-294`) — the `cls.__new__` + `__dict__.update` + `dataclasses.replace` dance is more contortion than needed. `dataclasses.replace(self, F=new_F)` alone should work since `LatticeField` is dataclass-flavored.
+- Dead commented-out alternate `nn_field` block at `lattice.py:254-279` — delete.
 
 ## Recommendation
 
