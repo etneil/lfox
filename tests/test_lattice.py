@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+
 import lfox.lattice as lat
 
 
@@ -73,8 +74,18 @@ def test_nn_field_antiperiodic_boundary():
     # so anti-periodic BC should flip the sign only at site 0.
     # Correct expected: [-4, 1, 2, 3]
     L = lat.SquareLattice(st_dims=(4,))
-    phi = lat.LatticeField(
-        lattice=L, F=jnp.array([1.0, 2.0, 3.0, 4.0]), bc=(-1,)
-    )
+    phi = lat.LatticeField(lattice=L, F=jnp.array([1.0, 2.0, 3.0, 4.0]), bc=(-1,))
     shifted = phi.nn_field(axis=0, shift=1)
     assert jnp.allclose(shifted.F, jnp.array([-4.0, 1.0, 2.0, 3.0]))
+
+    # Shift it again to make sure we get: [-3, -4, 1, 2]
+    shifted_twice = shifted.nn_field(axis=0, shift=1)
+    assert jnp.allclose(shifted_twice.F, jnp.array([-3.0, -4.0, 1.0, 2.0]))
+
+    # Shift it around fully to make sure we get the same field back with a sign
+    shifted_L = phi.nn_field(axis=0, shift=4)
+    assert jnp.allclose(shifted_L.F, (-1) * phi.F)
+
+    # Shift around twice to make sure we get the same field back identically
+    shifted_2L = phi.nn_field(axis=0, shift=8)
+    assert jnp.allclose(shifted_2L.F, phi.F)
