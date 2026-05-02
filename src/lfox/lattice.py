@@ -26,9 +26,9 @@ class Lattice(eqx.Module):
         # Per-axis coordinate grid for boundary-condition winding factors.
         # Computed on demand so the Lattice carries no JAX arrays (it's used
         # as a static field on LatticeField).
-        return jnp.meshgrid(
-            *[jnp.arange(Li) for Li in self.st_dims], indexing="ij"
-        )[axis]
+        return jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing="ij")[
+            axis
+        ]
 
 
 class SquareLattice(Lattice):
@@ -184,33 +184,6 @@ class LatticeField(eqx.Module):
         )
 
         return self.copy_new_F(shifted_field)
-
-    """
-    @partial(jax.jit, static_argnums=(1,))
-    def nn_field(self, axis, shift=1):
-        nn_shift = self.lattice.shift(self.F, axis=axis, shift=shift)
-
-        # Apply boundary conditions globally with some arcane NumPy manipulations
-        BC_factor = self.bc[axis]  # 1 or -1
-
-        # Unpack for JIT compilation
-        def grid_base(i, cgrid):
-            Li = self.lattice.st_dims[i]
-            return cgrid + [jnp.arange(Li)]
-
-        cgrid = jax.lax.fori_loop(0, len(self.lattice.st_dims), grid_base, [])
-        coords_ax = jnp.meshgrid(*cgrid, indexing='ij')[axis]
-
-#        coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in self.lattice.st_dims], indexing='ij')[axis]
-
-        _, winding = jnp.divmod(coords_ax+shift, self.lattice.st_dims[axis])
-        BC_field = (BC_factor)**(winding)
-
-        LF = self.copy()
-        LF.F = nn_shift * BC_field.reshape(self.st_dims())
-
-        return LF
-    """
 
     def __copy__(self):
         cls = self.__class__
