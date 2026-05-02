@@ -15,9 +15,6 @@ from jax import tree_util
 class Lattice(eqx.Module):
     st_dims: tuple[int]
     _dims: tuple[int] = eqx.field(init=False)
-    _bc_coords: jax.Array = eqx.field(init=False)
-    #    st_dims: jax.Array = eqx.field(converter=jax.numpy.asarray)
-    #    _dims: jax.Array = eqx.field(init=False)
 
     def __post_init__(self):
         # Dimensions of the physical lattice
@@ -25,21 +22,13 @@ class Lattice(eqx.Module):
         # non-trivial unit cell)
         self._dims = self.st_dims
 
-        # Field used for application of boundary conditions in LatticeFields
-        # self._bc_coords = tuple(jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing='ij'))
-        self._bc_coords = tuple(
-            jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing="ij")
-        )
-
-    # Override equality since it's using the bc_coords field when it shouldn't be
-    def __eq__(self, other):
-        if not isinstance(other, Lattice):
-            raise NotImplementedError
-
-        return self.st_dims == other.st_dims
-
-    def __hash__(self):
-        return hash(self.st_dims)
+    def bc_coord(self, axis):
+        # Per-axis coordinate grid for boundary-condition winding factors.
+        # Computed on demand so the Lattice carries no JAX arrays (it's used
+        # as a static field on LatticeField).
+        return jnp.meshgrid(
+            *[jnp.arange(Li) for Li in self.st_dims], indexing="ij"
+        )[axis]
 
 
 class SquareLattice(Lattice):
@@ -77,13 +66,7 @@ class HoneycombLattice(Lattice):
     unit_cell: ClassVar[tuple[int]] = (0, 1)
 
     def __post_init__(self):
-        #        self._dims = jnp.concatenate((self.st_dims, jnp.asarray((len(self.unit_cell),))))
         self._dims = self.st_dims + (len(self.unit_cell),)
-
-        # Field used for application of boundary conditions in LatticeFields
-        self._bc_coords = jnp.meshgrid(
-            *[jnp.arange(Li) for Li in self.st_dims], indexing="ij"
-        )
 
     def shift(self, field, axis, shift=1):
         # Shift within the unit cell too if we are moving in axis 0
@@ -182,8 +165,7 @@ class LatticeField(eqx.Module):
 
         # Apply boundary conditions globally with some arcane NumPy manipulations
         BC_factor = bc[axis]
-        #        coords_ax = jnp.meshgrid(*[jnp.arange(Li) for Li in st_dims], indexing='ij')[axis]
-        coords_ax = lattice._bc_coords[axis]
+        coords_ax = lattice.bc_coord(axis)
 
         # Minus signs show up at target, not source, so subtract shift.
         winding, _ = jnp.divmod(coords_ax - shift, st_dims[axis])
