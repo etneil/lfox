@@ -14,7 +14,7 @@ The repo is a research codebase: most exploration happens in the Jupyter noteboo
 - Sync env: `uv sync` (use `uv sync --extra metal` on Apple Silicon for `jax-metal`).
 - Run a script in-env: `uv run python <script>`.
 - Launch Jupyter: `uv run jupyter lab` (notebooks expect the package importable as `lfox`).
-- Run tests: `uv run pytest`. `tests/` pins physics invariants (action normalization, autodiff force vs. analytic force, `<exp(-ΔH)> = 1`, `Chain` bookkeeping). There is no CI, linter, or formatter configured.
+- Run tests: `uv run pytest`. `tests/` pins physics invariants (action normalization, autodiff force vs. analytic force, `<exp(-ΔH)> = 1`, RNG key threading, `Chain` bookkeeping). There is no CI, linter, or formatter configured.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ Import from the subpackage (`from lfox.evolution import HMC, Chain, LeapfrogInte
 
 - `base.py` — `Evolver(eqx.Module)` is the abstract Markov transition kernel: `evolve(fields, rng_key) -> (fields, monitor, rng_key)`. **Evolvers are pure.** They carry only what is constant across the chain (the action, algorithm hyperparameters); the fields and RNG key flow through as arguments. Never add mutable state to an `Evolver` — that is what made the old `HMCEvolver` unjittable. The base supplies a concrete `evolve_many` that runs the loop in a `jax.lax.scan`, which stacks whatever `monitor` dict the kernel returns, so the base never needs to know the diagnostic keys.
 - `base.py` — `Chain` is the host-side driver: an ordinary stateful Python class (not an `eqx.Module`) owning the RNG key, current fields, saved configurations, diagnostics, and observable measurements. It steps in blocks equal to the GCD of `save_freq` and the observable frequencies, so it never steps over a trajectory at which something must be recorded. All compiled work happens inside `evolver.evolve_many`.
-- `hmc.py` — `HMC(Evolver)`. `warmup` is a **static field**, not a call argument ("always accept" is a different transition kernel); build the variant with `as_warmup()`.
+- `hmc.py` — `HMC(Evolver)`. `warmup` is a **static field**, not a call argument ("always accept" is a different transition kernel); build the variant with `as_warmup()`. Note that the accept/reject uniform must be drawn from an RNG key advanced past *every* momentum draw, or it is a deterministic function of the momenta it is testing; `tests/test_scalar_hmc.py` pins this.
 - `integrators.py` — `LeapfrogIntegrator`, `OmelyanIntegrator` are `MDIntegrator` subclasses with `eps`, `Nstep` and a JIT-compiled `_integrate(delta_X, delta_P, X, P)`. `delta_X`/`delta_P` are closures supplied by the evolver — they are passed as static args (`static_argnums=(1,2)`), so re-creating them per call will trigger recompilation.
 - Algorithm-specific requirements belong on the `Action`, not on `Evolver`. HMC needs `dS` (free, via autodiff, for any action); a heatbath would need local conditional distributions, a cluster update bond weights. Keep the `Evolver` interface thin.
 

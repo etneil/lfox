@@ -83,8 +83,10 @@ class HMC(Evolver):
 
     @jax.jit
     def evolve(self, fields, rng_key):
-        # Refresh momentum
-        pi_fields, new_rng_key = self.momentum_refresh(fields, rng_key)
+        # Refresh momentum.  Note that rng_key is advanced past every momentum
+        # draw; the accept/reject uniform must be drawn from the advanced key, or
+        # it is a deterministic function of the momenta it is meant to test.
+        pi_fields, rng_key = self.momentum_refresh(fields, rng_key)
 
         # Integrate forward
         new_fields, new_pi_fields, delta_H, P_acc = self.MD_traj(fields, pi_fields)
@@ -94,7 +96,7 @@ class HMC(Evolver):
         if self.warmup:  # Warmups always accept!
             accept = jnp.array(True)
         else:
-            new_rng_key, subkey = jax.random.split(rng_key)
+            rng_key, subkey = jax.random.split(rng_key)
             r = jax.random.uniform(subkey)
 
             accept = r < P_acc
@@ -102,4 +104,4 @@ class HMC(Evolver):
 
         monitor["accept"] = accept
 
-        return new_fields, monitor, new_rng_key
+        return new_fields, monitor, rng_key

@@ -63,6 +63,25 @@ def test_hmc_omelyan_finite(scalar_action, lat4, phi4):
     assert new_fields['phi'].F.shape == (4, 4, 4)
 
 
+def test_hmc_evolve_advances_rng_key(scalar_action, phi4):
+    # The accept/reject uniform must be drawn from a key advanced past every
+    # momentum draw, otherwise it is a deterministic function of the momenta it
+    # is supposed to be testing.  Pin that the returned key is neither the input
+    # key nor the momentum subkey.
+    hmc = HMC(
+        action=scalar_action,
+        integrator=LeapfrogIntegrator(eps=0.1, Nstep=5),
+    )
+    rng_key = jax.random.PRNGKey(11)
+    _, _, new_key = hmc.evolve({'phi': phi4}, rng_key)
+
+    mom_key, mom_subkey = jax.random.split(rng_key)
+    assert not jnp.array_equal(new_key, rng_key)
+    assert not jnp.array_equal(new_key, mom_subkey)
+    # ...and it is advanced past the single-field momentum draw, not equal to it.
+    assert not jnp.array_equal(new_key, mom_key)
+
+
 def test_hmc_warmup_always_accepts(scalar_action, phi4):
     # A warmup kernel skips the accept/reject step entirely.
     hmc = HMC(
