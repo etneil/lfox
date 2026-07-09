@@ -12,6 +12,7 @@ dependencies = [
     "equinox>=0.13.7",
     "jax>=0.10.0",
     "jupyter>=1.1.1",
+    "jupytext>=1.19.4",
     "lsqfit>=13.3",
     "matplotlib>=3.10.3",
     "ml-dtypes>=0.5.1",
