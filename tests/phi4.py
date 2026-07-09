@@ -1,9 +1,9 @@
 import jax
 import jax.numpy as jnp
-import lfox.evolution.hmc as lhmc
+from lfox.action import Action
 
 
-class ScalarAction(lhmc.Action):
+class ScalarAction(Action):
     """Scalar phi^4 action from the Schaefer reproduction notebook."""
 
     @staticmethod

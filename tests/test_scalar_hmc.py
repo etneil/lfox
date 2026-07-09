@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import lfox.lattice as lat
-import lfox.evolution.hmc as lhmc
+from lfox.evolution import HMC, LeapfrogIntegrator, OmelyanIntegrator
 from tests.phi4 import ScalarAction
 
 
@@ -35,34 +35,61 @@ def test_force_matches_exact(scalar_action, lat4, scalar_params):
 
 
 def test_hmc_single_step_monitor_keys(scalar_action, lat4, phi4):
-    HMC = lhmc.HMCRewrite(
+    hmc = HMC(
         action=scalar_action,
-        integrator=lhmc.LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
     )
-    _, monitor, _ = HMC.evolve({'phi': phi4}, jax.random.PRNGKey(42), warmup=False)
+    _, monitor, _ = hmc.evolve({'phi': phi4}, jax.random.PRNGKey(42))
     assert {'delta_H', 'P_acc', 'accept'} <= monitor.keys()
 
 
 def test_hmc_single_step_finite(scalar_action, lat4, phi4):
-    HMC = lhmc.HMCRewrite(
+    hmc = HMC(
         action=scalar_action,
-        integrator=lhmc.LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
     )
-    _, monitor, _ = HMC.evolve({'phi': phi4}, jax.random.PRNGKey(7), warmup=False)
+    _, monitor, _ = hmc.evolve({'phi': phi4}, jax.random.PRNGKey(7))
     assert jnp.isfinite(monitor['delta_H'])
     assert jnp.isfinite(monitor['P_acc'])
 
 
 def test_hmc_omelyan_finite(scalar_action, lat4, phi4):
-    HMC = lhmc.HMCRewrite(
+    hmc = HMC(
         action=scalar_action,
-        integrator=lhmc.OmelyanIntegrator(eps=0.1, Nstep=10),
+        integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
     )
-    new_fields, monitor, _ = HMC.evolve(
-        {'phi': phi4}, jax.random.PRNGKey(99), warmup=False
-    )
+    new_fields, monitor, _ = hmc.evolve({'phi': phi4}, jax.random.PRNGKey(99))
     assert jnp.isfinite(monitor['delta_H'])
     assert new_fields['phi'].F.shape == (4, 4, 4)
+
+
+def test_hmc_warmup_always_accepts(scalar_action, phi4):
+    # A warmup kernel skips the accept/reject step entirely.
+    hmc = HMC(
+        action=scalar_action,
+        integrator=LeapfrogIntegrator(eps=0.5, Nstep=5),  # coarse: forces rejections
+    )
+    _, monitor, _ = hmc.as_warmup().evolve_many(
+        {'phi': phi4}, jax.random.PRNGKey(5), traj=20
+    )
+    assert jnp.all(monitor['accept'])
+
+    # ...whereas the production kernel rejects sometimes at this step size.
+    _, monitor, _ = hmc.evolve_many({'phi': phi4}, jax.random.PRNGKey(5), traj=20)
+    assert not jnp.all(monitor['accept'])
+
+
+def test_hmc_monitor_is_stacked_per_trajectory(scalar_action, phi4):
+    # evolve_many stacks whatever monitor the kernel returns, with dtypes intact.
+    hmc = HMC(
+        action=scalar_action,
+        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+    )
+    _, monitor, _ = hmc.evolve_many({'phi': phi4}, jax.random.PRNGKey(3), traj=7)
+
+    assert monitor['delta_H'].shape == (7,)
+    assert monitor['accept'].shape == (7,)
+    assert monitor['accept'].dtype == jnp.bool_
 
 
 def test_hmc_detailed_balance():
@@ -74,15 +101,15 @@ def test_hmc_detailed_balance():
     action = ScalarAction(
         field_names=['phi'], params={'kappa': 0.18, 'lambda': 1.145}
     )
-    HMC = lhmc.HMCRewrite(
+    hmc = HMC(
         action=action,
-        integrator=lhmc.LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
     )
 
     fields = {'phi': phi}
     rng_key = jax.random.PRNGKey(12345)
-    fields, _, rng_key = HMC.evolve_many(fields, rng_key, traj=100, warmup=True)
-    fields, monitor, _ = HMC.evolve_many(fields, rng_key, traj=500, warmup=False)
+    fields, _, rng_key = hmc.as_warmup().evolve_many(fields, rng_key, traj=100)
+    fields, monitor, _ = hmc.evolve_many(fields, rng_key, traj=500)
 
     mean_exp = float(np.mean(np.exp(-np.array(monitor['delta_H']))))
     assert 0.9 < mean_exp < 1.1, f"<exp(-dH)> = {mean_exp:.4f}, expected ~1.0"
