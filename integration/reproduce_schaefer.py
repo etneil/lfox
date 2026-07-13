@@ -34,7 +34,7 @@ jax.config.update("jax_threefry_partitionable", True)
 
 
 # %%
-class ScalarAction(lhmc.Action):        
+class ScalarAction(lfox.action.Action):        
 
     @staticmethod
     @jax.jit
@@ -167,7 +167,7 @@ for eps, Nstep in zip(all_eps, all_Nstep):
         acc_rate.append(mon['accept'])
 
     all_acc_rate.append(np.mean(np.array(acc_rate)))
-    
+
 
 # %%
 plt.plot(all_eps**2, all_acc_rate, ls=' ', marker='o')
@@ -310,7 +310,7 @@ for L in tqdm(all_L):
         raw_m = np.abs(np.array(raw_mag))/L**d
     
         mag_k[L].append(gv.dataset.avg_data(raw_m))
-    
+
 
 # %%
 plt.plot(all_kappa, gv.mean(mag_k[6]), ls=' ', marker='x')
