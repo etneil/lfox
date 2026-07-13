@@ -34,3 +34,6 @@ dev = [
     "jupyter>=1.1.1",
     "pytest>=8.0",
 ]
+
+[tool.jupytext]
+formats = "ipynb,py:percent"
