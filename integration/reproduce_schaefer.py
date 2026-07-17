@@ -156,7 +156,7 @@ rng_key = jax.random.PRNGKey(11134)
 
 for eps, Nstep in zip(all_eps, all_Nstep):
     F6 = {'phi': phi6}
-    hmc = lhmc.HMC(
+    hmc = HMC(
         action=S6,
         integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
     )
