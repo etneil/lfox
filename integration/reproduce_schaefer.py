@@ -272,7 +272,7 @@ plt.ylabel('$<m^2>$')
 plt.legend()
 
 # %% [markdown]
-# Finally the big physics result, figure 2.5!
+# Finally the big physics result, figure 2.5!  I'll use the Chain() interface here.
 
 # %%
 from tqdm import tqdm
@@ -283,7 +283,6 @@ all_kappa = np.array([0.05, 0.10, 0.15, 0.16, 0.17, 0.175, 0.18, 0.185, 0.19, 0.
 all_L = (6,8,10)
 
 mag_k = {}
-rng_key = jax.random.PRNGKey(58105)
 
 for L in tqdm(all_L):
     mag_k[L] = []
@@ -291,26 +290,27 @@ for L in tqdm(all_L):
     Lat = lat.SquareLattice(st_dims=((L,)*d))
     phi_L = lat.LatticeField(lattice=Lat, F=1)
 
-    for k in all_kappa:
-        raw_mag = []
-        fields = {'phi': phi_L}
+    for (i, k) in enumerate(all_kappa):
         Sk = ScalarAction(field_names=['phi'], params={'kappa': k, 'lambda': 1.1689})
-    
         hmc = HMC(
             action=Sk,
             integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
         )
 
-        fields, _, rng_key = hmc.as_warmup().evolve_many(fields, rng_key, traj=100)
-    
-        for _ in range(200):
-            fields, _, rng_key = hmc.evolve_many(fields, rng_key, traj=100)
-            raw_mag.append(mag(fields['phi'])[0])
-    
-        raw_m = np.abs(np.array(raw_mag))/L**d
-    
-        mag_k[L].append(gv.dataset.avg_data(raw_m))
+        chain = Chain(
+            evolver=hmc,
+            seed=58105 + 1000*L + i,
+            init_fields={'phi': phi_L},
+            observables={'mag': (mag_obs, 100)},
+            save_freq = 1000
+        )
 
+        chain.warmup(100)
+        chain.run(20000)
+
+        raw_mag = np.abs(np.array(chain.obs_chain['mag'])[:,0])/L**d
+        mag_k[L].append(gv.dataset.avg_data(raw_mag))
+        
 
 # %%
 plt.plot(all_kappa, gv.mean(mag_k[6]), ls=' ', marker='x')
@@ -327,28 +327,31 @@ plt.xlim(0.15, 0.22)
 
 d = 3
 Lat6 = lat.SquareLattice(st_dims=((6,)*d))
-phi6 = lat.LatticeField(Lat6)
+phi6 = lat.LatticeField(Lat6, F=1)
 rng_key = jax.random.PRNGKey(21245)
 
 hmc = HMC(
     action=ScalarAction(field_names=['phi'], params={'kappa': 0.185825, 'lambda': 1.1689}),
-    seed=21245,
-    init_fields={'phi': phi6},
     integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
-    observables={'mag': (mag_obs, 1)},
 )
 
-hmc.as_warmup().evolve(ntraj=1000, warmup=True)
+chain = Chain(
+    evolver=hmc,
+    seed=21245,
+    init_fields={'phi': phi6},
+    observables={'mag': (mag_obs, 1)},
+)    
 
+chain.warmup(1000)
 for _ in tqdm(range(1000)):
-    hmc.evolve(ntraj=1000)
+    chain.run(1000)
 
 # %%
-dH = np.array(HMC.monitor['delta_H'])
+dH = np.array(chain.monitor['delta_H'])
 gv.dataset.avg_data(np.exp(-dH))
 
 # %%
-m = np.array(HMC.obs_chain['mag'])[:,0]
+m = np.array(chain.obs_chain['mag'])[:,0]
 plt.plot(m[::100])
 
 gv.dataset.avg_data(m[::100]/6**3)
