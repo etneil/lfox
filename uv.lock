@@ -711,18 +711,15 @@ wheels = [
 ]
 
 [[package]]
-name = "jax-metal"
-version = "0.1.1"
+name = "jax-mps"
+version = "0.10.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax" },
     { name = "jaxlib" },
-    { name = "six" },
-    { name = "wheel" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/ec/9bb7f7f0ffd06c3fb89813126b2f698636ac7a4263ed7bdd1ff7d7c94f8f/jax_metal-0.1.1-py3-none-macosx_10_14_x86_64.whl", hash = "sha256:d918a78443cb808c9491a24a5c2a94cc4eabfd0461d5bcda29a8f332dfbe9b7e", size = 54662235, upload-time = "2024-10-08T16:57:30.128Z" },
-    { url = "https://files.pythonhosted.org/packages/09/dc/6d8fbfc29d902251cf333414cf7dcfaf4b252a9920c881354584ed36270d/jax_metal-0.1.1-py3-none-macosx_13_0_arm64.whl", hash = "sha256:f1dbfecb298cdd3ba6da3ad6dc9a2adb63d71741f8b8ece28c296b32d608b6c8", size = 41179678, upload-time = "2024-10-08T16:56:31.563Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/cc/d055fc820b97f234d975044a30118eadec0f009c4e5cec55af9d677f8bc0/jax_mps-0.10.10-py3-none-macosx_14_0_arm64.whl", hash = "sha256:029f29b00c4abfbb942fc5a9b57308879e209e94c99a94f5069fd87055157fc1", size = 44081522, upload-time = "2026-07-18T22:25:32.675Z" },
 ]
 
 [[package]]
@@ -1160,28 +1157,38 @@ wheels = [
 
 [[package]]
 name = "lfox"
-version = "0.1.0"
+version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },
-    { name = "jupyter" },
-    { name = "jupytext" },
-    { name = "lsqfit" },
-    { name = "matplotlib" },
-    { name = "ml-dtypes" },
     { name = "numpy" },
-    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
-metal = [
-    { name = "jax-metal" },
+mps = [
+    { name = "jax-mps" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "gvar" },
     { name = "jupyter" },
+    { name = "jupytext" },
+    { name = "lsqfit" },
+    { name = "matplotlib" },
+    { name = "pytest" },
+    { name = "tqdm" },
+]
+notebooks = [
+    { name = "gvar" },
+    { name = "jupyter" },
+    { name = "jupytext" },
+    { name = "lsqfit" },
+    { name = "matplotlib" },
+    { name = "tqdm" },
+]
+test = [
     { name = "pytest" },
 ]
 
@@ -1189,22 +1196,30 @@ dev = [
 requires-dist = [
     { name = "equinox", specifier = ">=0.13.7" },
     { name = "jax", specifier = ">=0.10.0" },
-    { name = "jax-metal", marker = "extra == 'metal'", specifier = ">=0.1.1" },
+    { name = "jax-mps", marker = "extra == 'mps'", specifier = ">=0.10.10" },
+    { name = "numpy", specifier = ">=1.26" },
+]
+provides-extras = ["mps"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "gvar", specifier = ">=13.1" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "jupytext", specifier = ">=1.19.4" },
     { name = "lsqfit", specifier = ">=13.3" },
     { name = "matplotlib", specifier = ">=3.10.3" },
-    { name = "ml-dtypes", specifier = ">=0.5.1" },
-    { name = "numpy", specifier = ">=2.4.4" },
+    { name = "pytest", specifier = ">=8.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
 ]
-provides-extras = ["metal"]
-
-[package.metadata.requires-dev]
-dev = [
+notebooks = [
+    { name = "gvar", specifier = ">=13.1" },
     { name = "jupyter", specifier = ">=1.1.1" },
-    { name = "pytest", specifier = ">=8.0" },
+    { name = "jupytext", specifier = ">=1.19.4" },
+    { name = "lsqfit", specifier = ">=13.3" },
+    { name = "matplotlib", specifier = ">=3.10.3" },
+    { name = "tqdm", specifier = ">=4.67.1" },
 ]
+test = [{ name = "pytest", specifier = ">=8.0" }]
 
 [[package]]
 name = "lsqfit"
@@ -2408,18 +2423,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
-]
-
-[[package]]
-name = "wheel"
-version = "0.47.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "packaging" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/39/62/75f18a0f03b4219c456652c7780e4d749b929eb605c098ce3a5b6b6bc081/wheel-0.47.0.tar.gz", hash = "sha256:cc72bd1009ba0cf63922e28f94d9d83b920aa2bb28f798a31d0691b02fa3c9b3", size = 63854, upload-time = "2026-04-22T15:51:27.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/1b/9e33c09813d65e248f7f773119148a612516a4bea93e9c6f545f78455b7c/wheel-0.47.0-py3-none-any.whl", hash = "sha256:212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced", size = 32218, upload-time = "2026-04-22T15:51:26.296Z" },
 ]
 
 [[package]]

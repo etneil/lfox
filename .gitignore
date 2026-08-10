@@ -2,3 +2,10 @@
 .ipynb_checkpoints
 __pycache__
 *.ipynb
+
+# Build artifacts / environments
+/dist/
+/build/
+*.egg-info/
+.venv/
+.pytest_cache/
