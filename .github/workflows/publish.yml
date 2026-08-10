@@ -58,14 +58,25 @@ jobs:
           path: dist/
 
       # Pinned to an exact version: setup-uv does not publish a floating `v9` tag.
+      # enable-cache must be off: this job deliberately does not check out the
+      # repository, so setup-uv's default `auto` cache finds no pyproject.toml /
+      # uv.lock to key on and fails. Nothing is installed here anyway -- the job
+      # only needs the uv binary to upload the already-built artifact.
       - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: false
 
+      # The publish URL is given explicitly rather than via `--index testpypi`,
+      # because that flag resolves the name from pyproject.toml, which is not
+      # present without a checkout. Keeping repository source out of the one job
+      # holding `id-token: write` means nothing in the repo can influence the
+      # step that mints a PyPI credential.
       - name: Publish
         env:
           TARGET: ${{ github.event_name == 'release' && 'pypi' || inputs.target }}
         run: |
           if [ "$TARGET" = "testpypi" ]; then
-            uv publish --index testpypi
+            uv publish --publish-url https://test.pypi.org/legacy/
           else
             uv publish
           fi

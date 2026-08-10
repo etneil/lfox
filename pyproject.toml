@@ -63,8 +63,9 @@ notebooks = [
     "tqdm>=4.67.1",
 ]
 
-# Named publish target for release dry runs: `uv publish --index testpypi`.
-# `explicit` keeps it out of dependency resolution -- it is a publish target only.
+# Named publish target for *local* release dry runs: `uv publish --index testpypi`.
+# CI does not use this -- the publish job passes --publish-url explicitly, since it
+# runs without a checkout. `explicit` keeps this out of dependency resolution.
 [[tool.uv.index]]
 name = "testpypi"
 url = "https://test.pypi.org/simple/"
