@@ -1,5 +1,10 @@
 # lfox
 
+[![CI](https://github.com/etneil/lfox/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/etneil/lfox/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/lfox.svg)](https://pypi.org/project/lfox/)
+[![Python versions](https://img.shields.io/pypi/pyversions/lfox.svg)](https://pypi.org/project/lfox/)
+[![License](https://img.shields.io/pypi/l/lfox.svg)](https://github.com/etneil/lfox/blob/main/LICENSE.txt)
+
 **L**attice **F**ields **O**ver ja**X** — a JAX-based library for lattice field theory
 simulations: Markov-chain field evolution (HMC), lattice operators, and observable
 measurement.
