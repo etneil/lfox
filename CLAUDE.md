@@ -11,7 +11,7 @@ The repo is a research codebase: most exploration happens in the Jupyter noteboo
 ## Environment & commands
 
 - Python ≥ 3.12, managed with `uv` (lockfile at `uv.lock`).
-- Sync env: `uv sync` (use `uv sync --extra metal` on Apple Silicon for `jax-metal`).
+- Sync env: `uv sync` (use `uv sync --extra mps` on Apple Silicon for `jax-mps`, experimental).
 - Run a script in-env: `uv run python <script>`.
 - Launch Jupyter: `uv run jupyter lab` (notebooks expect the package importable as `lfox`).
 - Run tests: `uv run pytest`. `tests/` pins physics invariants (action normalization, autodiff force vs. analytic force, `<exp(-ΔH)> = 1`, RNG key threading, `Chain` bookkeeping). There is no CI, linter, or formatter configured.
@@ -55,4 +55,3 @@ Import from the subpackage (`from lfox.evolution import HMC, Chain, LeapfrogInte
 - Boundary conditions: `bc` is a tuple of ±1 (only (anti-)periodic supported). Winding factor is `bc[axis]**winding` where `winding = (coords + shift) // L`.
 - Field arithmetic and `nn_field` always return new `LatticeField` instances; never mutate `self.F` — `LatticeField` is a frozen `eqx.Module` and assignment raises.
 - The pure/stateful boundary is the jit boundary. `Lattice`, `LatticeField`, `Action`, `MDIntegrator` and `Evolver` are pure `eqx.Module`s; `Chain` is the one stateful class, and it lives entirely outside jit.
-- Notebooks at the repo root are scratch/research artifacts of varying staleness. `reproduce_schaefer*.ipynb` are reference physics reproductions; `refactor_scratch.ipynb` and `*_refactor.ipynb` track the in-progress legacy → Equinox migration. Treat them as references, not specifications.
