@@ -1,0 +1,46 @@
+name: CI
+
+# Runs the test suite on every push to main and on every pull request, including
+# PRs opened by outside contributors. This is the status check to require in the
+# `main` branch ruleset.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # lets you trigger a run by hand from the Actions tab
+
+# If you push twice in quick succession, cancel the older run instead of letting
+# both finish. Saves CI minutes and gets you the answer for the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read # least privilege: CI only needs to read the repo
+
+jobs:
+  test:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # report all failing versions, not just the first
+      matrix:
+        # Matches requires-python and the classifiers in pyproject.toml.
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to an exact version: setup-uv does not publish a floating `v9` tag.
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      # --locked fails if uv.lock is out of date with pyproject.toml, which
+      # catches the "edited deps but forgot to re-lock" mistake.
+      # --no-default-groups --group test installs only the package plus pytest
+      # (~16 packages) instead of the full dev environment with Jupyter.
+      - name: Run tests
+        run: uv run --locked --no-default-groups --group test pytest -v
