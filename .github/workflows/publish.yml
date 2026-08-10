@@ -1,0 +1,69 @@
+name: Publish
+
+# Publishes to PyPI when a GitHub Release is published, and to TestPyPI on demand
+# (Actions -> Publish -> Run workflow). Authentication is via PyPI Trusted
+# Publishing (OIDC) -- there are no API tokens stored in this repository.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Index to publish to"
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - name: Run tests
+        run: uv run --group test pytest
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check metadata renders on PyPI
+        run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to ${{ github.event_name == 'release' && 'pypi' || inputs.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment name must match the one configured on the trusted publisher.
+    environment: ${{ github.event_name == 'release' && 'pypi' || inputs.target }}
+    permissions:
+      id-token: write # required for OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: astral-sh/setup-uv@v9
+
+      - name: Publish
+        env:
+          TARGET: ${{ github.event_name == 'release' && 'pypi' || inputs.target }}
+        run: |
+          if [ "$TARGET" = "testpypi" ]; then
+            uv publish --index testpypi
+          else
+            uv publish
+          fi
