@@ -6,17 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `lfox` ("Lattice Fields Over jaX") is a JAX-based library for lattice field theory simulations: Markov-chain field evolution (HMC), lattice operators, and (in progress) fermion solvers / gauge fields. The core abstraction is an `eqx.Module`-backed `Lattice` + `LatticeField` pair that participates in JAX pytrees, supports `jax.jit` / `jax.grad`, and exposes overloaded arithmetic.
 
-The repo is a research codebase: most exploration happens in the Jupyter notebooks at the repo root (e.g. `reproduce_schaefer*.ipynb`, `lfox_scratch*.ipynb`, `volume-ml.ipynb`). The installed package lives in `src/lfox/`.
-
 ## Environment & commands
 
 - Python ≥ 3.12, managed with `uv` (lockfile at `uv.lock`).
 - Sync env: `uv sync` (use `uv sync --extra mps` on Apple Silicon for `jax-mps`, experimental).
 - Run a script in-env: `uv run python <script>`.
-- Launch Jupyter: `uv run jupyter lab` (notebooks expect the package importable as `lfox`).
 - Run tests: `uv run pytest`. `tests/` pins physics invariants (action normalization, autodiff force vs. analytic force, `<exp(-ΔH)> = 1`, RNG key threading, `Chain` bookkeeping). There is no CI, linter, or formatter configured.
 
+## Coding philosophy
+
+Four core philosophies of developing `lfox`:
+
+1. __Clean and concise.__  This is a library meant for use by a broader audience.  It is meant specifically for use in theoretical physics research.  As a result, it is essential that the code remains _clean_ and _concise_.  Anyone who is using the code should be able to read it and understand how it functions, so they can verify that the physics outputs will be what they expect.
+2. __High-level and ergonomic.__  There are other lattice field theory codes written in lower-level compiled languages already on the market, but they mostly require a good amount of specialized knowledge to use properly.  One of the main reasons `lfox` is written in Python is to enable simple, high-level code.  When implementing user-facing functionality, ergonomics is the guiding principle; functions should be simple and natural to use.
+3. __Flexible and extensible.__  Another motivation for working in Python is flexibility and extensibility.  `lfox` code should generally be written to be easily modified or specialized.  Our goal is _not_ to be the fastest code for doing lattice QCD at the physical point; instead, we want to be the _easiest_ code to get up and running with in a new theory or with a new calculation.
+4. __Test-driven development.__ This is a code for computational physics research, so correctness is extremely important - we want to get science results that are reproducible and trustworthy out of this code.  When developing for `lfox`, follow test-driven development principles: new code must _always_ be accompanied with tests, ideally with the (initially failing) tests being written first.  Code-path tests are fine, but tests for physics/numerical correctness are better.  
+
+## Agent-human collaboration
+
+This file and the top level @README.md file should be treated as __human-only artifacts__; for agent partners, they are read-only and should not be modified.
+
+
+
 ## Architecture
+
+These are old notes and may be supplanted as progress is made, and likely moved to a new file.  For now they are kept here for reference.
 
 ### Lattice + LatticeField (`src/lfox/lattice.py`)
 
