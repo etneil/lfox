@@ -27,7 +27,6 @@ Four core philosophies of developing `lfox`:
 This file and the top level @README.md file should be treated as __human-only artifacts__; for agent partners, they are read-only and should not be modified.
 
 
-
 ## Architecture
 
 These are old notes and may be supplanted as progress is made, and likely moved to a new file.  For now they are kept here for reference.

@@ -1,135 +1,302 @@
 # lfox rewrite thoughts
 
-Bottom line up front: the *core* abstraction (Equinox-backed `Lattice` + `LatticeField` participating in pytrees, with JIT-friendly `nn_field` and a composable `Action`) is the right shape for a JAX lattice library — it's worth pushing forward. But there's enough half-finished migration in the tree that adding new physics on top will keep getting harder. Freeze features and converge before doing more.
+Revised 2026-09-04 against commit `86d5c8b`. Supersedes the May 2026 memo; the
+detail in `PLAN.md` steps 3-4 is superseded by this file too (steps 1-2 there are done).
 
-## Real bugs (not just style)
+Bottom line up front: the foundation has converged. The legacy `OldLattice` /
+`OldLatticeField` / `HMCEvolver` code is gone, there is one pure `HMC` kernel driven
+by a host-side `Chain`, and 32 tests pin the scalar physics. What remains is
+concentrated in three places:
 
-- **`Action.__iadd__` returns `None`** (`hmc.py:196-198`). After `a += b`, `a` is `None`. Either fix to `return self` or delete and rely on `+`.
-- **Off-by-one in `HMCEvolver.evolve`** (`hmc.py:626,631,666`). `r_accept` is shape `(ntraj,)`, but the loop uses `r_accept[traj]` with `traj ∈ [1, ntraj]` — index `0` is unused, index `ntraj` is OOB.
-- **`HMCEvolver` mutates `LatticeField.F`** (`hmc.py:669`: `self.fields[fname].F = prev_fields[fname]`). `LatticeField` is an `eqx.Module` (frozen). This path is dead-on-arrival against the new field type — which is presumably why `HMCRewrite` exists, but `HMCEvolver` is still in the file as if usable.
-- **Fermion code rides the legacy pytree path.** `Dirac4DFermionField` inherits from the new `LatticeField` but is registered with `_tree_flatten`/`_tree_unflatten` (`spin.py:107-111`), which only exist on `OldLatticeField`. Either it's broken or it's silently working by accident.
-- **`Action.__copy__`** has unreachable code after the `return` (`hmc.py:211-226`).
-- **`HoneycombLattice.shift`** has a flagged FIXME — the subclass isn't actually usable.
+1. **`Action` composition and params are buggy and untested.** Three reproducible
+   bugs, one of which silently returns wrong physics.
+2. **`lfox.fermions` is broken end to end** and should be rewritten, not patched.
+3. **HMC has no notion of a field type.** Momenta, kinetic energy and the update step
+   are hard-wired for scalars. Gauge fields cannot land until that is a protocol.
 
-## Architectural calls — what to keep
+Do those three in that order, then gauge fields. Everything else is small.
 
-- **`eqx.Module` for `Lattice`/`LatticeField`/`Action`/integrators**, with the `Lattice` carried as `static=True` on fields. Right call. The custom `__eq__`/`__hash__` on `Lattice` (ignoring `_bc_coords`) is the correct workaround for caching JAX arrays on a static field.
-- **`_nn_field` as a JIT'd staticmethod with everything it needs as static args.** Slightly awkward signature, but it's how you avoid retracing per call.
-- **Composable `Action` via `sub_actions` and `+`.** Good shape for multi-term actions (gauge + fermion + pseudofermion).
-- **Pure-functional `HMCRewrite` with `lax.fori_loop` in `evolve_many`.** This is the right end state.
+## Done since the May memo
 
-## Architectural calls — what to reconsider
+For the record, so nobody re-investigates:
 
-- **List-vs-dict split at the `Action` boundary.** `_S` takes lists, `S_field`/`S` take dicts, and `S_field` does the remap via `field_names`. The justification (flavor aliasing) is real, but in practice every callsite has to keep ordering invariants in their head, and `add_subaction` merging `params` with last-write-wins (there's a TODO there) is going to bite. Two cleaner options: (a) commit to dicts everywhere and handle aliasing with a lightweight rename layer, or (b) commit to lists everywhere and keep names as a parallel tuple. Hybrid is the worst.
-- **Two HMC classes coexisting.** Pick `HMCRewrite`, delete `HMCEvolver`, and re-add the diagnostic instrumentation (`monitor`, `field_chain`, `obs_chain`) as a thin Python wrapper around it. Right now both exist and only one works against the new types.
-- **`OldLattice`/`OldLatticeField` in the same file as the new ones.** They're still pytree-registered, which means imports pollute the JAX pytree registry whether you use them or not. Move them to a `legacy.py` you can stop importing, or just delete once fermions are migrated.
-- **`MRSolver.solve` is a Python `while` loop** (`solver.py:19`). The *step* is JIT'd, but the loop is host-side, so each step pays a dispatch cost and convergence is checked on the host. For a fermion solver in an HMC inner loop this is the wrong tradeoff — `jax.lax.while_loop` with a residual predicate is the standard pattern.
-- **No tests.** This is the biggest leverage point for a physics codebase. Don't need a lot — a half-dozen tests pinning invariants (translation invariance of the action, leapfrog reversibility on a free field, HMC `<exp(-ΔH)> = 1`, MR solver convergence on a known matrix, BC winding sign on a small lattice) would let aggressive refactors proceed without breaking physics. Right now the only safety net is "does the notebook still reproduce Schaefer."
-- **Notebook-driven development at this scale is hurting.** Several of the root notebooks are >300KB; the legacy/rewrite duality in `src/` looks like the natural consequence of "edit notebook, copy stable bits into `src/`, never finish the cutover." Worth pulling the stable kernels into `src/lfox/` modules and keeping notebooks thin.
+- `Action.__iadd__` returns `self`; `__copy__` is clean; the `r_accept` off-by-one and
+  the field-mutating `HMCEvolver` died with the old evolver.
+- `OldLattice` / `OldLatticeField` deleted. `HMCEvolver` vs `HMCRewrite` resolved into
+  `HMC` (pure kernel, `lax.scan` in `evolve_many`) plus `Chain` (stateful driver).
+- `Lattice.__eq__` resolved by removal: the precomputed `_bc_coords` grid is gone,
+  `bc_coord(axis)` is computed on demand, and default dataclass equality/hash works.
+  `lattice == 5` returns `False`. (The architecture note in `CLAUDE.md` still describes
+  `_bc_coords` and an overridden `__eq__`/`__hash__`; that paragraph is stale.)
+- Dead commented-out `nn_field` block deleted.
+- Tests exist: `tests/test_lattice.py` (BC winding), `tests/test_scalar_hmc.py`
+  (action normalization, autodiff vs analytic force, RNG threading, `<exp(-dH)> = 1`),
+  `tests/test_chain.py` (bookkeeping, blocking invariance, seed reproducibility).
+- Notebooks thinned; jupytext pairing; the Schaefer reproduction lives in `integration/`.
 
-## Smaller cleanups while you're in there
+## Real bugs (all reproduced 2026-09-04)
 
-- `LatticeField.__post_init__` uses `type(self.F) != jnp.array` (`lattice.py:149`). `jnp.array` is a function, not a type — this comparison is always `True`. Use `isinstance(self.F, jax.Array)` or just always broadcast.
-- `LeapfrogIntegrator._integrate` / `OmelyanIntegrator._integrate` pass `delta_X`/`delta_P` as static args (`static_argnums=(1,2)`) — this means *each* call to `HMCEvolver.delta_mom()` (which builds a fresh closure) triggers a recompile. `make_deltas()` saves them, which is the right intent, but `HMCRewrite.delta_mom`/`delta_fields` rebuild closures every `evolve` — worth checking with `jax.jit`'s cache.
-- `Action.params` being `static=True` while it's mutated in `add_subaction` (`hmc.py:235`) is a footgun. Either freeze `params` or stop mutating it post-construction.
-- `Lattice.__eq__` (`lattice.py:80-81`) raises `NotImplementedError` instead of returning the `NotImplemented` singleton. `lattice == 5` explodes rather than returning `False`. One-line fix.
-- `LatticeField.copy_new_F` (`lattice.py:288-294`) — the `cls.__new__` + `__dict__.update` + `dataclasses.replace` dance is more contortion than needed. `dataclasses.replace(self, F=new_F)` alone should work since `LatticeField` is dataclass-flavored.
-- Dead commented-out alternate `nn_field` block at `lattice.py:254-279` — delete.
+### `Action` composition and params
 
-## Recommendation
+None of these are covered by a test. `PLAN.md` lists "Action composition: `+`, `+=`,
+nested `sub_actions`, `params` merging" as a test to write; write it first, it fails today.
 
-The bones are good — JAX + Equinox + per-site `LatticeField` arithmetic + composable `Action` is exactly how to build this from scratch. But the codebase is carrying two parallel implementations of the field abstraction *and* the evolver, the fermion path is on the wrong side of the migration, and there are no tests to tell when something quietly breaks. Don't add gauge fields or more fermion machinery on top of the current state.
+- **`a + b` mutates `a.params`.** `__copy__` (`action.py:111-113`) does
+  `dataclasses.replace(self, sub_actions=...)`, which shares the `params` dict, and
+  `add_subaction` then updates it in place (`action.py:121`). After `c = a + b`,
+  `a.params == c.params`.
+- **`a + (b + c)` raises `FrozenInstanceError`.** `add_subaction` assigns
+  `other.sub_actions = []` (`action.py:128`) on a frozen `eqx.Module`. Nested
+  composition does not work at all.
+- **In-place mutation of `params` poisons the jit cache.** `params` is a static field, so
+  the dict *object* is part of the jit cache key. Mutating it rewrites the key under the
+  already-compiled executable. Even a brand-new action with the new value then hits the
+  stale entry:
 
-Concrete next ~week of work:
+  | call                                                | result  | expected |
+  |-----------------------------------------------------|---------|----------|
+  | `act.S(fields)` with kappa = 0.18                   | 271.164 | 271.164  |
+  | `act.params['kappa'] = 0.0`; `act.S(fields)`        | 271.164 | 270.007  |
+  | fresh `ScalarAction(params={'kappa': 0.0, ...}).S`  | 271.164 | 270.007  |
 
-1. Add 6–10 invariant tests (a couple of hours; pays for itself immediately).
-2. Migrate `Dirac4DFermionField` to the new `LatticeField` and drop the manual `_tree_flatten` registration.
-3. Delete `OldLattice`/`OldLatticeField`/`HMCEvolver` once nothing imports them, or quarantine in `legacy.py`.
-4. Fix the bugs above (`__iadd__`, `r_accept` indexing, `MRSolver` while-loop).
-5. *Then* start on gauge fields — `WilsonDiracOp.shift_fermion` is already the right hook.
+  Third row is silent wrong physics from an action that was never mutated.
+- **Sub-actions receive the parent's merged params**, not their own
+  (`action.py:72`: `action._S(fields=..., params=self.params)`). Two Wilson terms with
+  different kappa cannot coexist, which is exactly the multi-flavor case the list-of-fields
+  convention was meant to enable.
 
-After that, the architecture earns the right to grow.
+### `lfox.fermions` (`import lfox.fermions.spin` raises)
 
-## Forward-looking design proposals
+- `spin.py:107-111` registers `_tree_flatten` / `_tree_unflatten`, which do not exist on
+  `LatticeField` (`AttributeError` at import).
+- `spin.py:65` defines a custom `__init__`, which suppresses `LatticeField.__post_init__`:
+  no default boundary conditions, no scalar broadcast. Equinox warns about this at import.
+- `spin.py:76,78,83`: `bilinear` and `conj` assign to `.F` on a frozen module.
+- `wilson.py:23` calls `zero_fill()`, which does not exist; `wilson.py:25` uses
+  `psi.lattice.d`, which does not exist (`d()` is a method on `LatticeField`).
+- `solver.py:16-19`: `iter` is initialized and never incremented, so `max_iter` is dead,
+  a non-converging solve loops forever, and the returned iteration count is always 0.
+  The loop is also host-side Python; it should be `jax.lax.while_loop` with a residual
+  predicate.
+- `WilsonDiracOp` and `MRSolver` are plain classes jitted with `static_argnums=(0,)`,
+  so they hash by identity and every new instance recompiles.
 
-Two design changes worth making *before* the next round of physics, since both touch APIs that will harden as more code is written on top.
+This is ~180 lines. Rewrite against the current `LatticeField`, tests first.
 
-### Named internal indices
+### Smaller
 
-Replace the positional `indices: tuple[int]` on `LatticeField` with named, ordered axes:
+- `lattice.py:96`: `type(self.F) != jnp.array` compares against a function, so it is
+  always `True`. The broadcast-multiply always runs; an `int32` field is silently
+  upcast to `float64`. Use `self.F.ndim == 0` or `jnp.broadcast_to`.
+- `lattice.py:102`: the `type(self.lattice) is dict` workaround is dead.
+- `lattice.py:195-201`: `copy_new_F` still does the `__new__` + `__dict__.update` dance.
+  Both `dataclasses.replace(self, F=F)` and `eqx.tree_at(lambda f: f.F, self, F)` are
+  verified to work. `tree_at` also skips re-running `__post_init__` on every arithmetic op.
+- `lattice.py:75`: `HoneycombLattice.shift` FIXME stands. `rb_split` / `rb_combine`
+  (`lattice.py:40-51`) are stubs that return `None`. Delete or mark unsupported.
+- `integrators.py:35,64`: the inner `jax.jit(static_argnums=(1, 2))` on `_integrate`,
+  with the force closures as static args, is noise. `HMC.evolve` is the jit boundary and
+  repeated `evolve` calls hit its cache; the inner jit adds nothing under it and would
+  recompile on every call outside it. Remove it and keep one boundary.
+- `integrators.py:9-10`: `eps` and `Nstep` are pytree leaves, so they are *traced* inside
+  `evolve`. Consequence: changing either does not retrace (nice for tuning), but
+  `fori_loop` lowers to a `while_loop` with an unknown trip count. Make a deliberate
+  choice; suggest `Nstep` static, `eps` traced.
+- `hmc.py:40-46`: `momentum_refresh` returns raw arrays, which only become
+  `LatticeField`s after the first integrator `update`. Works by accident; fixed for free
+  by proposal 2 below.
+
+## Architectural calls that held up
+
+Unchanged from May, now confirmed by a year of churn:
+
+- `eqx.Module` for `Lattice` / `LatticeField` / `Action` / integrators / `Evolver`, with
+  `Lattice` as a static field on `LatticeField`.
+- `_nn_field` as a jitted staticmethod with everything it needs as static args.
+- Composable `Action` via `sub_actions` and `+` (the *shape* is right; the params
+  plumbing is what is broken).
+- Pure `Evolver` + `lax.scan` in `evolve_many`; stateful `Chain` entirely outside jit.
+  The pure/stateful boundary is the jit boundary. Keep it that way.
+
+## Design proposals
+
+### 1. Per-term, immutable params; dicts everywhere; `rebind` for aliasing
+
+Each `Action` carries its own `params`; `S_field` walks sub-actions calling each with its
+own slice. No flat merge, no `params.update`. Authoring is unchanged:
+
+```python
+S = GaugeAction(field_names=['U'], params={'beta': 5.0})
+S = S + WilsonAction(field_names=['psi_1'], params={'kappa': 0.13})
+S = S + WilsonAction(field_names=['psi_2'], params={'kappa': 0.14})   # two kappas coexist
+```
+
+Commit to dicts at every layer (`_S`, `S_field`, `S`, `dS` all take `{name: field}`),
+and handle many-flavor aliasing with an explicit rename instead of positional lists:
+
+```python
+psi2 = WilsonAction(field_names=['psi'], params={'kappa': 0.14}).rebind({'psi': 'psi_2'})
+```
+
+`rebind` returns a new action whose `S_field` looks up `fields[rebind_map.get(name, name)]`.
+One indirection at trace time, zero at runtime.
+
+Post-construction mutation goes away. Replace `S.params['kappa'] = x` with
+`S.with_param('kappa', x)` returning a new action.
+
+**New option, not in the May memo: make `params` a pytree leaf, not static.** The
+staticmethod `_S` already receives `params` as a traced argument, so tracing does not
+change. Benefits: a coupling scan does not retrace; cache poisoning becomes impossible by
+construction; `with_param` is `eqx.tree_at`. Cost: params must be JAX-typed scalars
+(floats/ints are fine; no strings or shape-determining ints in `params`). Recommend
+trying non-static first and falling back to static-plus-frozen if something needs a
+Python-level parameter.
+
+**Decision needed:** what observables receive. `Chain._record_step` currently passes
+`evolver.action.params` (the flat dict) to `obs_f(fields, params)`. Options: pass the
+action itself, or expose a merged read-only view. Passing the action is simplest and
+lets observables call `action.S_field` directly.
+
+### 2. A field-type protocol for HMC
+
+Today HMC and the integrators assume scalars in three places: `momentum_refresh`
+(`jax.random.normal` with `F.shape`), `H_density` (`0.5 * pi**2`), and
+`MDIntegrator.update` (`X + dt * P`). Group-valued links need Lie-algebra momenta with a
+different shape from `U`, a trace for the kinetic term, and `U -> exp(i dt P) U` for the
+update. Put those three on the field type:
+
+```python
+class LatticeField(eqx.Module):
+    def random_momentum(self, key) -> "LatticeField": ...   # Gaussian, same shape as F
+    def kinetic(self, p) -> "LatticeField": ...            # 0.5 * p**2, per site
+    def advance(self, p, dt) -> "LatticeField": ...        # self + dt * p
+
+class LinkField(LatticeField):
+    def random_momentum(self, key): ...   # algebra-valued, shape (..., N, N) traceless anti-Hermitian
+    def kinetic(self, p): ...             # 0.5 * sum_a p_a**2 per site; normalization must match random_momentum
+    def advance(self, p, dt): ...         # expm(dt * p) @ self.F
+```
+
+`HMC.momentum_refresh`, `HMC.H_density` and `MDIntegrator.update` dispatch to these and
+carry zero knowledge of field types. Momenta are `LatticeField`s from the start, which
+also fixes the raw-array-then-`LatticeField` inconsistency noted above.
+
+**Forces:** commit to carry-and-project. `jax.grad(S)` with respect to the matrix entries
+of `U`, then project `U dS/dU^dagger` (or the equivalent) onto the traceless
+anti-Hermitian part. This composes with autodiff for free and is what the existing JAX
+lattice codes do. `delta_P` becomes `field.project_force(grad)` with the scalar
+implementation being the identity. Parameterize-and-exponentiate is equivalent at first
+order but makes the parameterization trajectory-local; not worth it.
+
+**Why now, before fermions:** it needs no gauge fields to exist. Do it on scalars against
+the existing `<exp(-dH)> = 1` test plus a new leapfrog reversibility test, and scalar HMC
+stays a clean special case. If this waits until a `LinkField` exists, expect a parallel
+`GaugeHMC` and the same bifurcation the old `HMCEvolver` / `HMCRewrite` split had.
+
+### 3. Named internal indices
+
+Replace positional `indices: tuple[int]` with ordered, named axes:
 
 ```python
 class LatticeField(eqx.Module):
     lattice: Lattice = eqx.field(static=True)
     F: jax.Array
     bc: tuple[int, ...] = eqx.field(static=True)
-    # ordered, named internal axes following the spacetime axes in F
-    axes: tuple[tuple[str, int], ...] = eqx.field(static=True, default=())
+    axes: tuple[tuple[str, int], ...] = eqx.field(static=True, default=())   # after spacetime
 
-    def axis_pos(self, name: str) -> int:  # static, called at trace time
-        d = len(self.lattice._dims)
-        for i, (n, _) in enumerate(self.axes):
-            if n == name:
-                return d + i
-        raise KeyError(name)
+    def axis_pos(self, name: str) -> int:   # static, resolved at trace time
+        ...
 ```
 
-Operators target axes by name but compile to positional ops:
+Operators target axes by name but compile to positional ops; the name-to-position map is
+static, so the jaxpr is identical to a hand-written positional einsum. The one rule: never
+build an einsum string from a runtime value.
+
+**Timing:** the only consumer of `indices` today is the broken fermion code, so this is
+the cheapest it will ever be, but do it *as part of* the fermion rewrite rather than
+before it, so there is a consumer to test against. The payoff is largest once gauge
+fields exist: links carry `(mu, color, color)`, fermions `(spin, color)`, and positional
+einsum strings across the two types is where silent contraction bugs would live.
+
+## Ordered work
+
+Tests first at every step (see `CLAUDE.md`). Each step lists the tests that should fail
+before the code changes and pass after.
+
+### 1. `Action` composition and params
+
+Tests (new file `tests/test_action.py`):
+- `a + b` leaves `a` unchanged (params and `sub_actions`).
+- `a + (b + c)` works and flattens to three terms.
+- `(a + b).S == a.S + b.S` on a random field.
+- Two sub-actions with the same param name and different values give the right total.
+- `with_param` / `rebind` return new actions; the original is unchanged; jit results are
+  correct for both (guards against cache poisoning).
+- `_S` receives a dict; a two-flavor action via `rebind` evaluates correctly.
+
+Then: fix the three bugs, implement proposal 1, update `Chain` observables, update
+`tests/phi4.py` and `integration/reproduce_schaefer.py` to the dict convention.
+
+### 2. Field-type protocol for HMC
+
+Tests:
+- Leapfrog and Omelyan reversibility: integrate forward, negate momenta, integrate back,
+  recover `X` to ~1e-10 in float64.
+- Momenta returned by `momentum_refresh` are `LatticeField`s with the field's lattice/bc.
+- Existing `<exp(-dH)> = 1` and detailed-balance tests unchanged.
+
+Then: add `random_momentum` / `kinetic` / `advance` / `project_force` to `LatticeField`,
+dispatch from `HMC` and `MDIntegrator.update`. Remove the inner jit on `_integrate`; make
+`Nstep` static.
+
+### 3. Fermion rewrite with named indices
+
+Tests (new `tests/test_spin.py`, `tests/test_wilson.py`, `tests/test_solver.py`):
+- Gamma algebra: `{g_mu, g_nu} = 2 delta_mu_nu`, Hermiticity, `g5**2 = 1`, and
+  `g5 = g0 g1 g2 g3` with the sign fixed by the DeGrand-Rossi definitions in `spin.py`.
+- `Dirac4DFermionField` construction gets default BCs; `bilinear` / `conj` return new fields.
+- Wilson operator: `g5`-Hermiticity (`g5 D g5 = D^dagger`); on a plane wave the free
+  operator reduces to `1 - 2 kappa sum_mu (cos p_mu - i g_mu sin p_mu)` acting on the
+  spinor, checked on a small lattice; antiperiodic time BC shifts the allowed `p_0` by
+  `pi / L_0`.
+- MR solver: converges on a known small matrix to the requested residual; returned
+  iteration count is correct; `max_iter` terminates a non-converging solve.
+
+Then: rewrite `spin.py` / `wilson.py` / `solver.py` against the current `LatticeField`
+with `axes=(('spin', 4),)`, make `WilsonDiracOp` and `MRSolver` `eqx.Module`s,
+`lax.while_loop` in the solver, drop the pytree registration.
+
+### 4. Small cleanups
+
+Fold into whichever of 1-3 touches the file: `lattice.py:96` type check,
+`lattice.py:102` dead branch, `copy_new_F` via `tree_at`, honeycomb FIXME and rb stubs.
+Flag the stale `CLAUDE.md` architecture paragraph for a human edit.
+
+### 5. Gauge fields
+
+Only after 1-3: `LinkField` implementing the protocol from step 2, a Wilson plaquette
+action, `WilsonDiracOp.shift_fermion` overridden to multiply by the link. Tests: gauge
+invariance of the plaquette action under a random gauge transformation, force vs.
+finite difference, `<exp(-dH)> = 1` for pure gauge on a tiny lattice, plaquette
+expectation value against a known strong-coupling or literature number.
+
+## Reproducing the cache-poisoning bug
 
 ```python
-@jax.jit
-def gamma_apply(field, gamma_mat):
-    pos = field.axis_pos('spin')          # static, resolved at trace
-    return field.copy_new_F(
-        jnp.tensordot(gamma_mat, field.F, axes=[[1], [pos]]).moveaxis(0, pos)
-    )
+import jax, jax.numpy as jnp
+jax.config.update("jax_enable_x64", True)
+import lfox.lattice as lat
+from tests.phi4 import ScalarAction
+
+L = lat.SquareLattice(st_dims=(4, 4, 4))
+fields = {'phi': lat.LatticeField(lattice=L, F=jax.random.normal(jax.random.PRNGKey(0), (4, 4, 4)))}
+
+act = ScalarAction(field_names=['phi'], params={'kappa': 0.18, 'lambda': 1.3})
+print(act.S(fields))                       # 271.164
+act.params['kappa'] = 0.0
+print(act.S(fields))                       # 271.164, expected 270.007
+fresh = ScalarAction(field_names=['phi'], params={'kappa': 0.0, 'lambda': 1.3})
+print(fresh.S(fields))                     # 271.164, expected 270.007 (!)
 ```
 
-**Why it doesn't cost performance:** the name→position map is `static=True`, so `axis_pos` runs in Python during tracing and disappears from the compiled HLO. The jaxpr is byte-identical to a hand-written positional einsum (verifiable with `jax.make_jaxpr`). The one rule: never build an einsum string from a runtime value inside a jit — since names live on the static field type, that won't happen by accident.
-
-**Why it composes well with sharding:** you partition spacetime axes via `Mesh` + `NamedSharding`/`PartitionSpec`; internal indices (spin/color) are typically replicated and contracted locally. Named internal axes makes that boundary explicit and self-documenting. If color ever needs sharding (very large N), it's a one-line spec change because the axis name maps to a known static position.
-
-**Why now:** `Dirac4DFermionField._inner_product` already hardcodes `'...i,...i'` assuming spin is the only trailing axis. The moment a gauged Dirac op adds a color index, every einsum in the fermion code needs to remember positional order. Named axes prevents a class of silent contraction bugs before they get written.
-
-### Per-term action params (drop the flat-merge)
-
-`Action.add_subaction` currently merges sub-action `params` into a single flat dict (last-write-wins, TODO flagged). Replace with per-sub-action params: each `Action` carries its own `params`, and `S_field` walks sub-actions calling each with its own slice.
-
-Authoring ergonomics are preserved verbatim:
-
-```python
-S = GaugeAction(field_names=['U'], params={'beta': 5.0})
-S = S + WilsonAction(field_names=['psi'], params={'kappa': 0.13})
-S = S + ScalarAction(field_names=['phi'], params={'lam': 0.1, 'm2': -2.0})
-```
-
-The case the flat dict can't handle today falls out for free:
-
-```python
-psi1 = WilsonAction(field_names=['psi_1'], params={'kappa': 0.13})
-psi2 = WilsonAction(field_names=['psi_2'], params={'kappa': 0.14})
-S = gauge_act + psi1 + psi2   # two κ's coexist; flat-merge would clobber
-```
-
-**Pair this with committing to dicts on the field side**, and handle many-flavor aliasing with an explicit rename map instead of positional list-vs-dict ordering:
-
-```python
-psi2_act = WilsonAction(field_names=['psi'], params={'kappa': 0.14}) \
-            .rebind({'psi': 'psi_2'})
-```
-
-`rebind` returns a new action whose `S_field` does `fields[rebind_map.get(name, name)]` — one indirection at trace time, zero at runtime. The list-vs-dict hybrid goes away; the multi-flavor motivation is satisfied; `_S`, `S`, `S_field` all take dicts.
-
-**User-visible change:** `S.params['kappa']` from outside is gone. Replace with `S.with_param('kappa', 0.14)` returning a new action (pure-functional, JIT-safe; sub-action targeting via path). Notebooks that mutate `params` in place need updating — but those mutations already conflict with `params` being `static=True`, so they're fragile today.
-
-**Why now:** with gauge β, Wilson κ, pseudofermion mass, and eventually multi-flavor all landing at once, the flat-merge collision is going to bite during the gauge-field push. Cleaner to remove the foot-gun first.
-
-### Open question to resolve before gauge fields
-
-How does a `LinkField` (or `geometry='link'` tag on `LatticeField`) interact with the integrator? Sketch:
-
-- Each field type knows how to advance itself given a tangent-space momentum: `field.advance(p, dt)`. Scalars use `+`; group-valued links use `U → exp(i·dt·P)·U`.
-- `MDIntegrator.update` calls `field.advance(...)` instead of `+`, dispatching per-field.
-- Forces from `jax.grad` need to land in the algebra, not the group — either parameterize-and-exponentiate (cleanest for autodiff) or carry-and-project. Decide before the first link-valued action lands.
-
-If this gets sketched before fermions get heavier, scalar HMC remains a clean special case. If not, expect a parallel `GaugeHMC` evolver to appear and the same `HMCEvolver` vs `HMCRewrite` bifurcation to repeat one level up.
+Run with `PYTHONPATH=. uv run python <file>` from the repo root.
