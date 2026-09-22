@@ -147,10 +147,15 @@ class LatticeField(eqx.Module):
     __add__ = _field_op(operator.add)
     __radd__ = _field_op(operator.add, rev=True)
     __sub__ = _field_op(operator.sub)
+    __rsub__ = _field_op(operator.sub, rev=True)
     __mul__ = _field_op(operator.mul)
     __rmul__ = _field_op(operator.mul, rev=True)
     __truediv__ = _field_op(operator.truediv)
+    __rtruediv__ = _field_op(operator.truediv, rev=True)
     __pow__ = _field_op(operator.pow)
+
+    def __neg__(self):
+        return self.copy_new_F(-self.F)
 
     def conj(self):
         new_F = self.F.conj()

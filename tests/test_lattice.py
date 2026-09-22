@@ -44,6 +44,24 @@ def test_lattice_field_pow(lat4):
     assert jnp.allclose((phi**2).F, 9.0)
 
 
+def test_lattice_field_neg(lat4):
+    # A new field with the same boundary conditions; the original is unchanged.
+    phi = lat.LatticeField(lattice=lat4, F=jnp.full((4, 4, 4), 2.0), bc=(1, 1, -1))
+    neg = -phi
+    assert jnp.allclose(neg.F, -2.0)
+    assert neg.bc == phi.bc
+    assert jnp.allclose(phi.F, 2.0)
+
+
+def test_lattice_field_reflected_sub_and_div(lat4):
+    # A scalar on the left, as in 1 - phi**2 or 1 / (1 + g * phi**2).
+    phi = lat.LatticeField(lattice=lat4, F=jnp.full((4, 4, 4), 2.0))
+    assert jnp.allclose((1.0 - phi).F, -1.0)
+    assert jnp.allclose((6.0 / phi).F, 3.0)
+    assert isinstance(1.0 - phi, lat.LatticeField)
+    assert isinstance(6.0 / phi, lat.LatticeField)
+
+
 def test_nn_field_uniform_periodic(lat4):
     # Uniform field with periodic BC: any shift returns the same values
     phi = lat.LatticeField(lattice=lat4, F=jnp.full((4, 4, 4), 3.7))

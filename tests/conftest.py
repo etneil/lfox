@@ -5,17 +5,18 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 import lfox.lattice as lat
-from tests.phi4 import ScalarAction  # noqa: F401 — re-exported for convenience
+from lfox.action import Action
+from tests.phi4 import ScalarTerm  # noqa: F401 — re-exported for convenience
 
 
 @pytest.fixture
 def scalar_params():
-    return {'kappa': 0.18169, 'lambda': 1.3282}
+    return {'kappa': 0.18169, 'lamb': 1.3282}
 
 
 @pytest.fixture
 def scalar_action(scalar_params):
-    return ScalarAction(field_names=['phi'], params=scalar_params)
+    return Action(ScalarTerm(**scalar_params))
 
 
 @pytest.fixture

@@ -18,7 +18,7 @@ class HMC(Evolver):
     # different transition kernel, not a flag on this one.  Build a warmup variant
     # with `as_warmup()`.
 
-    action: Action
+    action: Action = eqx.field(converter=Action)
     integrator: MDIntegrator
     warmup: bool = eqx.field(static=True, default=False)
 
@@ -39,7 +39,7 @@ class HMC(Evolver):
 
     def momentum_refresh(self, fields, rng_key):
         pi_fields = {}
-        for fname in fields.keys():
+        for fname in self.action.evolved_fields:
             rng_key, subkey = jax.random.split(rng_key)
             pi_fields[fname] = jax.random.normal(subkey, shape=fields[fname].F.shape)
 
@@ -53,12 +53,8 @@ class HMC(Evolver):
 
     def delta_mom(self):
         def delta_P(X, P):
-            result = {}
-            derivs = self.action.dS(X)
-            for field in self.action.field_names:
-                result[field] = -1 * derivs[field]
-
-            return result
+            derivs = self.action.dS(X, wrt=tuple(P))
+            return {name: -derivs[name] for name in P}
 
         return delta_P
 
@@ -83,6 +79,12 @@ class HMC(Evolver):
 
     @jax.jit
     def evolve(self, fields, rng_key):
+
+        # Refresh heatbath draws, if any are present
+        if len(self.action.sampled_fields) > 0:
+            rng_key, subkey = jax.random.split(rng_key)
+            fields = fields | self.action.sample(fields, subkey)
+
         # Refresh momentum.  Note that rng_key is advanced past every momentum
         # draw; the accept/reject uniform must be drawn from the advanced key, or
         # it is a deterministic function of the momenta it is meant to test.
@@ -90,6 +92,7 @@ class HMC(Evolver):
 
         # Integrate forward
         new_fields, new_pi_fields, delta_H, P_acc = self.MD_traj(fields, pi_fields)
+
 
         monitor = {"delta_H": delta_H, "P_acc": P_acc}
 

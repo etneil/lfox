@@ -2,8 +2,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import lfox.lattice as lat
+from lfox.action import Action
 from lfox.evolution import HMC, LeapfrogIntegrator, OmelyanIntegrator
-from tests.phi4 import ScalarAction
+from tests.phi4 import ScalarTerm
 
 
 def test_action_uniform_field(scalar_action, lat4, scalar_params):
@@ -11,7 +12,7 @@ def test_action_uniform_field(scalar_action, lat4, scalar_params):
     # S per site = c^2*(1 - 2*kappa*d) + lambda*(c^2-1)^2
     c = 1.5
     phi = lat.LatticeField(lattice=lat4, F=jnp.full((4, 4, 4), c))
-    kappa, lam, d = scalar_params['kappa'], scalar_params['lambda'], 3
+    kappa, lam, d = scalar_params['kappa'], scalar_params['lamb'], 3
     expected = 4**3 * (c**2 * (1 - 2*kappa*d) + lam * (c**2 - 1)**2)
     assert jnp.isclose(scalar_action.S({'phi': phi}), expected, rtol=1e-5)
 
@@ -29,7 +30,7 @@ def test_force_matches_exact(scalar_action, lat4, scalar_params):
     phi = lat.LatticeField(lattice=lat4, F=F_vals)
 
     autodiff_force = scalar_action.dS({'phi': phi})['phi'].F
-    exact_force = ScalarAction.exact_force([phi], scalar_params).F
+    exact_force = scalar_action["ScalarTerm"].exact_gradient(phi)['phi'].F
 
     assert jnp.allclose(autodiff_force, exact_force, rtol=1e-5)
 
@@ -117,9 +118,7 @@ def test_hmc_detailed_balance():
     # isn't grossly violated (true value ≈ 1, tolerance set to ±10%).
     L = lat.SquareLattice(st_dims=(4, 4, 4))
     phi = lat.LatticeField(lattice=L, F=jnp.ones((4, 4, 4)))
-    action = ScalarAction(
-        field_names=['phi'], params={'kappa': 0.18, 'lambda': 1.145}
-    )
+    action = Action(ScalarTerm(kappa=0.18, lamb=1.145))
     hmc = HMC(
         action=action,
         integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),

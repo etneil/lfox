@@ -157,7 +157,7 @@ class Chain:
         for name, (obs_f, freq) in self.observables.items():
             if self.traj % freq == 0:
                 self.obs_chain[name].append(
-                    obs_f(self.fields, self.evolver.action.params)
+                    obs_f(self.fields, self.evolver.action)
                 )
                 self.obs_traj[name].append(self.traj)
 

@@ -15,8 +15,8 @@ class MDIntegrator(eqx.Module):
     @staticmethod
     @jax.jit
     def update(fields, delta, dt):
-        new_fields = {}
-        for fname in fields.keys():
+        new_fields = dict(fields)
+        for fname in delta:
             new_fields[fname] = fields[fname] + dt * delta[fname]
 
         return new_fields
