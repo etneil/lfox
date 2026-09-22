@@ -35,7 +35,7 @@ retrace when it changes -- and note that a traced coupling cannot be used in an
             return 0.5 * self.m2 * phi**2
 
     S = Mass(m2=0.1) + Hopping(kappa=0.18)
-    S.S({'phi': phi})
+    S({'phi': phi})         # the total action; same as S.S(...)
 
 `S` and `dS` are the interface every evolver depends on.  `sampled_fields` /
 `evolved_fields` are a structural declaration: a sampled field has an exact
@@ -457,6 +457,10 @@ class Action(eqx.Module):
             total = total + term.total(**term._args("total", fields))
 
         return total
+
+    def __call__(self, fields):
+        # S(fields), as the physics is written: the action on a configuration.
+        return self.S(fields)
 
     def dS(self, fields, wrt=None):
         # dS/dfield (the gradient, not the force), keyed by external name.

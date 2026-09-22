@@ -211,7 +211,7 @@ def test_roles_are_the_density_signature():
 
 def test_default_binding_evaluates_under_the_declared_names(phi):
     S = Action(Mass(m2=1.0))
-    assert float(S.S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 1.0)))
+    assert float(S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 1.0)))
 
 
 def test_term_rebind_returns_a_new_term(phi):
@@ -266,8 +266,14 @@ def test_a_term_is_not_evaluable():
     # (role vs external name), so only `Action` carries the public API.
     t = Mass(m2=1.0)
     for name in ("S", "S_field", "dS", "sample", "terms",
-                 "sampled_fields", "evolved_fields"):
+                 "sampled_fields", "evolved_fields", "__call__"):
         assert not hasattr(t, name), name
+
+
+def test_calling_an_action_evaluates_it(phi):
+    # S(fields) reads like the physics, S[phi]; `S.S` stays as the long form.
+    S = Mass(m2=1.0) + Hopping(kappa=0.1)
+    assert float(S({"phi": phi})) == pytest.approx(float(S.S({"phi": phi})))
 
 
 def test_action_wraps_a_single_term(phi):
@@ -276,7 +282,7 @@ def test_action_wraps_a_single_term(phi):
 
     assert type(S) is Action
     assert S.terms == (t,)
-    assert float(S.S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 1.0)))
+    assert float(S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 1.0)))
 
 
 def test_action_constructor_is_variadic_and_flattens():
@@ -327,7 +333,7 @@ def test_add_on_shared_fields_is_quiet(phi):
         S = Mass(m2=1.0) + Hopping(kappa=0.1)
 
     expected = mass_S(phi.F, 1.0) + hopping_S(phi.F, 0.1)
-    assert float(S.S({"phi": phi})) == pytest.approx(float(expected))
+    assert float(S({"phi": phi})) == pytest.approx(float(expected))
 
 
 def test_add_leaves_operands_unchanged():
@@ -362,8 +368,8 @@ def test_nested_add_flattens_to_terms(phi, chi):
     assert bc.terms == (b, c)  # the operand is not hollowed out
     assert all(isinstance(t, Term) for t in (a + bc).terms)
 
-    S = float((a + b + c).S(fields))
-    assert float((a + bc).S(fields)) == pytest.approx(S)
+    S_num = float((a + b + c).S(fields))
+    assert float((a + bc).S(fields)) == pytest.approx(S_num)
 
 
 def test_sum_builtin_composes_a_generator(phi):
@@ -418,7 +424,7 @@ def test_sum_of_same_field_terms(phi):
         + hopping_S(phi.F, 0.1)
         + 0.5 * 0.5 * jnp.sum(phi.F) ** 2 / phi.F.size
     )
-    assert float(S.S({"phi": phi})) == pytest.approx(float(expected))
+    assert float(S({"phi": phi})) == pytest.approx(float(expected))
 
 
 # --- lookup by name -----------------------------------------------------------
@@ -481,7 +487,7 @@ def test_distinct_labels_declare_a_deliberate_duplicate(phi):
     heavy = Mass(m2=3.0, label="heavy")
 
     S = light + heavy
-    assert float(S.S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 4.0)))
+    assert float(S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 4.0)))
 
 
 def test_one_label_on_the_same_fields_is_a_duplicate():
@@ -495,7 +501,7 @@ def test_different_bindings_are_not_duplicates(phi, chi):
     S = Mass(m2=1.0) + Mass(m2=3.0).rebind(phi="chi")
 
     expected = mass_S(phi.F, 1.0) + mass_S(chi.F, 3.0)
-    assert float(S.S({"phi": phi, "chi": chi})) == pytest.approx(float(expected))
+    assert float(S({"phi": phi, "chi": chi})) == pytest.approx(float(expected))
 
 
 def test_structure_alone_does_not_distinguish_terms(phi):
@@ -584,7 +590,7 @@ def test_action_replicate_copies_a_multi_term_block(phi, chi):
     assert len(S.terms) == 4
     fields = {"phi": phi, "eta_0": chi, "eta_1": chi}
     one = block.S({"phi": phi, "eta": chi})
-    assert float(S.S(fields)) == pytest.approx(2 * float(one))
+    assert float(S(fields)) == pytest.approx(2 * float(one))
 
 
 # --- couplings ----------------------------------------------------------------
@@ -741,7 +747,7 @@ def test_a_module_valued_coupling_is_allowed(phi):
             return 0.5 * self.scale.s * phi**2
 
     S = Action(ScaledMass(scale=Scale(s=2.0)))
-    assert float(S.S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 2.0)))
+    assert float(S({"phi": phi})) == pytest.approx(float(mass_S(phi.F, 2.0)))
 
 
 # --- what a term class must declare -------------------------------------------
