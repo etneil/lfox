@@ -1,6 +1,6 @@
 import math
 from abc import abstractmethod
-from functools import partial
+from functools import partial, reduce
 
 import equinox as eqx
 import jax
@@ -71,16 +71,13 @@ class Evolver(eqx.Module):
         return fields, monitor, rng_key
 
 
-def _normalize_observables(observables):
-    # Accept either {'name': fn} (measured every trajectory) or
-    # {'name': [fn, freq]}, and normalize to {'name': (fn, freq)}.
-    normalized = {}
-    for name, spec in (observables or {}).items():
-        if callable(spec):
-            normalized[name] = (spec, 1)
-        else:
-            obs_f, freq = spec
-            normalized[name] = (obs_f, int(freq))
+def _normalize_measure(measure):
+    # Accept a list whose entries are either fn (measured every trajectory) or
+    # (fn, freq), and normalize to [(fn, freq), ...].
+    normalized = []
+    for spec in measure or []:
+        fn, freq = (spec, 1) if callable(spec) else spec
+        normalized.append((fn, int(freq)))
 
     return normalized
 
@@ -98,19 +95,22 @@ class Chain:
     #   chain.warmup(100)
     #   chain.run(500)
     #
-    # `observables` maps a name to either a function f(fields, params) or a pair
-    # [f, freq] measuring every `freq` trajectories.
+    # `measure` is a list of measurement functions f(fields, action) returning
+    # a dict {name: value}, each entry either f (every trajectory) or (f, freq).
+    # Chain compiles them, and steps in blocks of the GCD of all frequencies.
+    # Each returned name becomes a column, read back with `column(name)`;
+    # `columns(*names)` aligns several on the trajectories they share, which
+    # is what a jackknife over more than one of them needs.
     #
     # Trajectory numbering counts production trajectories only; `warmup` advances
     # `warmup_traj` instead and saves nothing.
 
-    def __init__(self, evolver, seed, init_fields, observables=None, save_freq=1):
+    def __init__(self, evolver, seed, init_fields, measure=None, save_freq=1):
         self.evolver = evolver
         self.seed = seed
         self.rng_key = jax.random.PRNGKey(seed)
         self.fields = dict(init_fields)
         self.save_freq = save_freq
-        self.observables = _normalize_observables(observables)
 
         # Every field must correspond to something in the action, and vice versa
         field_names = set(evolver.action.field_names)
@@ -120,6 +120,27 @@ class Chain:
                 f"field names {sorted(field_names)}."
             )
 
+        # Compile each measurement function, and learn the names and shapes it
+        # returns without running it, so that a collision fails here rather
+        # than halfway through a run.
+        self.measure = []
+        self.column_shapes = {}
+        for fn, freq in _normalize_measure(measure):
+            out = jax.eval_shape(fn, self.fields, evolver.action)
+            if not isinstance(out, dict):
+                raise TypeError(
+                    f"measurement function {getattr(fn, '__name__', fn)} must "
+                    f"return a dict of named values, not {type(out).__name__}."
+                )
+            for name, value in out.items():
+                if name in self.column_shapes:
+                    raise ValueError(
+                        f"measurement {name!r} is returned by more than one "
+                        "measurement function."
+                    )
+                self.column_shapes[name] = value.shape
+            self.measure.append((jax.jit(fn), freq))
+
         self.traj = 0
         self.warmup_traj = 0
 
@@ -127,8 +148,8 @@ class Chain:
         self.field_chain = {fname: [self.fields[fname]] for fname in self.fields}
 
         self.monitor = {}
-        self.obs_chain = {name: [] for name in self.observables}
-        self.obs_traj = {name: [] for name in self.observables}
+        self.measurements = {name: [] for name in self.column_shapes}
+        self.measurement_traj = {name: [] for name in self.column_shapes}
 
     @property
     def N_fields(self):
@@ -139,7 +160,7 @@ class Chain:
         # that we never step over a trajectory at which something must be
         # recorded.  Every save/measurement frequency is a multiple of this.
         block = self.save_freq
-        for _, freq in self.observables.values():
+        for _, freq in self.measure:
             block = math.gcd(block, freq)
 
         return max(block, 1)
@@ -154,15 +175,14 @@ class Chain:
                 self.field_chain[fname].append(self.fields[fname])
             self.traj_chain.append(self.traj)
 
-        for name, (obs_f, freq) in self.observables.items():
+        for fn, freq in self.measure:
             if self.traj % freq == 0:
-                self.obs_chain[name].append(
-                    obs_f(self.fields, self.evolver.action)
-                )
-                self.obs_traj[name].append(self.traj)
+                for name, value in fn(self.fields, self.evolver.action).items():
+                    self.measurements[name].append(np.asarray(value))
+                    self.measurement_traj[name].append(self.traj)
 
     def warmup(self, ntraj):
-        # Thermalize.  Diagnostics are recorded; configurations and observables
+        # Thermalize.  Diagnostics are recorded; configurations and measurements
         # are not, since a warmup kernel does not sample the target distribution.
         evolver = self.evolver.as_warmup()
         self.fields, monitor, self.rng_key = evolver.evolve_many(
@@ -178,7 +198,7 @@ class Chain:
         if ntraj % block != 0:
             raise ValueError(
                 f"ntraj={ntraj} must be a multiple of {block}, the greatest common "
-                f"divisor of save_freq and the observable frequencies."
+                f"divisor of save_freq and the measurement frequencies."
             )
 
         for _ in range(ntraj // block):
@@ -197,3 +217,35 @@ class Chain:
             return None
 
         return float(np.mean(self.monitor["accept"][-self.traj :]))
+
+    def column(self, name):
+        # Every recorded value of one measurement, as a float64 array whose
+        # leading axis is Monte Carlo time.
+        self._check_name(name)
+        values = np.array(self.measurements[name], dtype=np.float64)
+
+        return values.reshape(-1, *self.column_shapes[name])
+
+    def column_traj(self, name):
+        # The trajectories at which `column(name)` was measured.
+        self._check_name(name)
+
+        return np.array(self.measurement_traj[name], dtype=int)
+
+    def columns(self, *names):
+        # Several columns, restricted to the trajectories at which all of them
+        # were measured, so they can be resampled together.
+        trajs = [self.column_traj(name) for name in names]
+        shared = reduce(np.intersect1d, trajs)
+
+        return tuple(
+            self.column(name)[np.isin(traj, shared)]
+            for name, traj in zip(names, trajs)
+        )
+
+    def _check_name(self, name):
+        if name not in self.column_shapes:
+            raise KeyError(
+                f"no measurement {name!r}; this chain measures "
+                f"{sorted(self.column_shapes)}."
+            )

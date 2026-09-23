@@ -1,5 +1,6 @@
 import copy
 import dataclasses
+import math
 import operator
 from abc import ABC, abstractmethod
 from functools import partial
@@ -29,6 +30,11 @@ class Lattice(eqx.Module):
         return jnp.meshgrid(*[jnp.arange(Li) for Li in self.st_dims], indexing="ij")[
             axis
         ]
+
+    @property
+    def volume(self):
+        # Number of lattice sites, including any unit-cell structure.
+        return math.prod(self._dims)
 
 
 class SquareLattice(Lattice):

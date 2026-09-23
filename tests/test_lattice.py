@@ -107,3 +107,9 @@ def test_nn_field_antiperiodic_boundary():
     # Shift around twice to make sure we get the same field back identically
     shifted_2L = phi.nn_field(axis=0, shift=8)
     assert jnp.allclose(shifted_2L.F, phi.F)
+
+
+def test_lattice_volume():
+    assert lat.SquareLattice(st_dims=(6, 4, 8)).volume == 192
+    # Counts sites, so a unit cell multiplies it.
+    assert lat.HoneycombLattice(st_dims=(3, 4)).volume == 24
