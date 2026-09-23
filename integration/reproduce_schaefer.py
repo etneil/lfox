@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from lfox.evolution import HMC, Chain, LeapfrogIntegrator, OmelyanIntegrator
+from lfox.action import Action, Term
 
 # Imports below require "dev" environment
 import matplotlib.pyplot as plt
@@ -34,36 +35,19 @@ jax.config.update("jax_threefry_partitionable", True)
 
 
 # %%
-class ScalarAction(lfox.action.Action):        
+class ScalarAction(Term):
 
-    @staticmethod
-    @jax.jit
-    def _S(fields, params):
-        phi = fields[0]
+    kappa: float
+    lamb: float
+    
+    def density(self, phi):    
         S = phi**2
         
         for ax in range(phi.d()):
-            S -= 2 * params['kappa'] * phi * phi.nn_field(ax)
+            S -= 2 * self.kappa * phi * phi.nn_field(ax)
 
-        S += params['lambda'] * (phi**2 - 1)**2
+        S += self.lamb * (phi**2 - 1)**2
         return S
-    
-    # Exact force function instead of autodiff, for testing purposes
-    @staticmethod
-    @jax.jit
-    def exact_force(fields, params):
-        phi = fields[0]
-
-        J = phi.nn_field(axis=0, shift=1) + phi.nn_field(axis=0, shift=-1)
-        for ax in range(1,phi.d):
-            J += phi.nn_field(axis=ax, shift=1)
-            J += phi.nn_field(axis=ax, shift=-1)
-
-        F = -2 * params['kappa'] * J
-        F += 2 * phi.F
-        F += 4 * params['lambda'] * (phi.F**2 - 1) * phi.F
-
-        return F
 
 
 # %%
@@ -74,7 +58,7 @@ d = 3
 Lat4 = lat.SquareLattice(st_dims=((4,)*d))
 phi4 = lat.LatticeField(lattice=Lat4, F=1)
 
-S4 = ScalarAction(field_names=['phi'], params={'kappa': 0.18169, 'lambda': 1.3282})
+S = Action(ScalarAction(kappa=0.18169, lamb=1.3282))
 
 all_Nstep = np.array([10, 20, 30, 40, 50])
 all_eps = 1/all_Nstep
@@ -84,11 +68,11 @@ all_dH_om = []
 
 for eps, Nstep in zip(all_eps, all_Nstep):
     hmc_leap = HMC(
-        action = S4,
+        action = S,
         integrator = LeapfrogIntegrator(eps=eps, Nstep=Nstep),
     )
     hmc_om = HMC(
-        action = S4,
+        action = S,
         integrator = OmelyanIntegrator(eps=eps, Nstep=Nstep),
     )
 
@@ -146,8 +130,6 @@ d = 3
 Lat6 = lat.SquareLattice(st_dims=((6,)*d))
 phi6 = lat.LatticeField(lattice=Lat6, F=1)
 
-S6 = ScalarAction(field_names=['phi'], params={'kappa': 0.185825, 'lambda': 1.1689})
-
 all_Nstep = np.array([4, 5, 7, 8, 10, 20, 30, 40, 50])
 all_eps = 1/all_Nstep
 
@@ -157,7 +139,7 @@ rng_key = jax.random.PRNGKey(11134)
 for eps, Nstep in zip(all_eps, all_Nstep):
     F6 = {'phi': phi6}
     hmc = HMC(
-        action=S6,
+        action=S,
         integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
     )
 
@@ -186,7 +168,7 @@ plt.ylabel('$1/\\epsilon/$ acc rate [cost]')
 # %%
 # %%time
 hmc = HMC(
-    action=ScalarAction(field_names=['phi'], params={'kappa': 0.18, 'lambda': 1.145}),
+    action=Action(ScalarAction(kappa=0.18, lamb=1.145)),
     integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
 )
 
@@ -212,7 +194,7 @@ def mag(phi):
     m = jnp.sum(phi.F)
     return jnp.array([m, m**2, m**4])
 
-def mag_obs(fields, params):
+def mag_obs(fields, act):
     return mag(fields['phi'])
 
 
@@ -245,7 +227,7 @@ for eps, Nstep in zip(all_eps, all_Nstep):
     raw_m2_HMD = []
     
     hmc = HMC(
-        action=ScalarAction(field_names=['phi'], params={'kappa': 0.185825, 'lambda': 1.1689}),
+        action=Action(ScalarAction(kappa=0.185825, lamb=1.1689)),
         integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
     )
     
@@ -291,7 +273,7 @@ for L in tqdm(all_L):
     phi_L = lat.LatticeField(lattice=Lat, F=1)
 
     for (i, k) in enumerate(all_kappa):
-        Sk = ScalarAction(field_names=['phi'], params={'kappa': k, 'lambda': 1.1689})
+        Sk = Action(ScalarAction(kappa=k, lamb=1.1689))
         hmc = HMC(
             action=Sk,
             integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
@@ -310,7 +292,7 @@ for L in tqdm(all_L):
 
         raw_mag = np.abs(np.array(chain.obs_chain['mag'])[:,0])/L**d
         mag_k[L].append(gv.dataset.avg_data(raw_mag))
-        
+
 
 # %%
 plt.plot(all_kappa, gv.mean(mag_k[6]), ls=' ', marker='x')
@@ -331,7 +313,7 @@ phi6 = lat.LatticeField(Lat6, F=1)
 rng_key = jax.random.PRNGKey(21245)
 
 hmc = HMC(
-    action=ScalarAction(field_names=['phi'], params={'kappa': 0.185825, 'lambda': 1.1689}),
+    action=Action(ScalarAction(kappa=0.185825, lamb=1.1689)),
     integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
 )
 
