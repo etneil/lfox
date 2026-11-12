@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import pytest
 
 import lfox.lattice as lat
 
@@ -113,3 +114,46 @@ def test_lattice_volume():
     assert lat.SquareLattice(st_dims=(6, 4, 8)).volume == 192
     # Counts sites, so a unit cell multiplies it.
     assert lat.HoneycombLattice(st_dims=(3, 4)).volume == 24
+
+
+# --- the shape of F ---------------------------------------------------------
+#
+# KNOWN FAILURES until LatticeField checks F.  Its __post_init__ multiplies F
+# by ones(dims()) -- meant for a scalar, but done for every F -- so a wrongly
+# shaped array is silently broadcast against the lattice instead of rejected.
+
+
+@pytest.mark.parametrize("shape", [(4,), (4, 4), (4, 1, 4), (1, 4, 4, 4), (2, 4, 4, 4)])
+def test_lattice_field_rejects_a_wrongly_shaped_array(lat4, shape):
+    with pytest.raises(ValueError, match="has shape"):
+        lat.LatticeField(lattice=lat4, F=jnp.ones(shape))
+
+
+def test_lattice_field_shape_includes_internal_indices(lat4):
+    # A field with indices=(2,) has shape dims + (2,); a spacetime-only F is
+    # rejected rather than broadcast across the index.
+    psi = lat.LatticeField(lattice=lat4, F=jnp.ones((4, 4, 4, 2)), indices=(2,))
+    assert psi.F.shape == (4, 4, 4, 2)
+
+    with pytest.raises(ValueError, match="has shape"):
+        lat.LatticeField(lattice=lat4, F=jnp.ones((4, 4, 4)), indices=(2,))
+
+
+def test_lattice_field_arithmetic_cannot_change_its_shape(lat4):
+    # Broadcasting in an operator must not quietly turn a field into a batch
+    # of fields.
+    phi = lat.LatticeField(lattice=lat4, F=jnp.ones((4, 4, 4)))
+    with pytest.raises(ValueError, match="has shape"):
+        phi * jnp.ones((2, 4, 4, 4))
+
+
+def test_lattice_field_from_a_scalar_is_a_float_field(lat4):
+    # F=1 is the shorthand for a unit field.  An integer F -- scalar or array
+    # -- still gives a float field, or autodiff (dS) would refuse it.
+    phi = lat.LatticeField(lattice=lat4, F=1)
+    assert phi.F.shape == (4, 4, 4)
+    assert jnp.issubdtype(phi.F.dtype, jnp.floating)
+    assert jnp.all(phi.F == 1)
+
+    ints = lat.LatticeField(lattice=lat4, F=jnp.ones((4, 4, 4), dtype=int))
+    assert jnp.issubdtype(ints.F.dtype, jnp.floating)
