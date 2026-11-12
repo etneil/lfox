@@ -22,6 +22,8 @@ import numpy as np
 
 from lfox.evolution import HMC, Chain, LeapfrogIntegrator, OmelyanIntegrator
 from lfox.action import Action, Term
+import lfox.scalar.observables as sc_obs
+import lfox.stats as lstats
 
 # Imports below require "dev" environment
 import matplotlib.pyplot as plt
@@ -236,8 +238,11 @@ for eps, Nstep in zip(all_eps, all_Nstep):
         F6_HMC, _, rng_key = hmc.evolve_many(F6_HMC, rng_key, traj=100)
         F6_HMD, _, rng_key = hmc.as_warmup().evolve_many(F6_HMD, rng_key, traj=100)
 
-        raw_m2_HMC.append(mag(F6_HMC['phi'])[1]/6**d)
-        raw_m2_HMD.append(mag(F6_HMD['phi'])[1]/6**d)
+        raw_m2_HMC.append(sc_obs.magnetization(F6_HMC['phi'])**2)
+        raw_m2_HMD.append(sc_obs.magnetization(F6_HMD['phi'])**2)
+        
+#        raw_m2_HMC.append(mag(F6_HMC['phi'])[1]/6**d)
+#        raw_m2_HMD.append(mag(F6_HMD['phi'])[1]/6**d)
     
     m2_HMC.append(gv.dataset.avg_data(raw_m2_HMC))
     m2_HMD.append(gv.dataset.avg_data(raw_m2_HMD))
@@ -245,8 +250,8 @@ for eps, Nstep in zip(all_eps, all_Nstep):
 
 
 # %%
-plt.errorbar(all_eps**2, gv.mean(m2_HMD), gv.sdev(m2_HMD), ls=' ', marker='s', color='red', label='MD')
-plt.errorbar(all_eps**2, gv.mean(m2_HMC), gv.sdev(m2_HMC), ls=' ', marker='*', color='forestgreen', label='HMC')
+plt.errorbar(all_eps**2, gv.mean(m2_HMD)*6**3, gv.sdev(m2_HMD)*6**3, ls=' ', marker='s', color='red', label='MD')
+plt.errorbar(all_eps**2, gv.mean(m2_HMC)*6**3, gv.sdev(m2_HMC)*6**3, ls=' ', marker='*', color='forestgreen', label='HMC')
 
 plt.xlim(0,0.07)
 plt.xlabel('$\epsilon^2$')
@@ -266,6 +271,9 @@ all_L = (6,8,10)
 
 mag_k = {}
 
+def mag(fields, action):
+    return {'mag': sc_obs.magnetization(fields['phi'])}
+
 for L in tqdm(all_L):
     mag_k[L] = []
 
@@ -283,15 +291,16 @@ for L in tqdm(all_L):
             evolver=hmc,
             seed=58105 + 1000*L + i,
             init_fields={'phi': phi_L},
-            observables={'mag': (mag_obs, 100)},
+#            observables={'mag': (sc_obs.magnetization, 100)},
+            measure=[mag],
             save_freq = 1000
         )
 
         chain.warmup(100)
         chain.run(20000)
 
-        raw_mag = np.abs(np.array(chain.obs_chain['mag'])[:,0])/L**d
-        mag_k[L].append(gv.dataset.avg_data(raw_mag))
+        #raw_mag = np.abs(np.array(chain.obs_chain['mag'])[:,0])/L**d
+        mag_k[L].append(gv.dataset.avg_data(np.abs(chain.column('mag'))))
 
 
 # %%
@@ -321,8 +330,8 @@ chain = Chain(
     evolver=hmc,
     seed=21245,
     init_fields={'phi': phi6},
-    observables={'mag': (mag_obs, 1)},
-)    
+    measure=[(mag, 1)],
+)
 
 chain.warmup(1000)
 for _ in tqdm(range(1000)):
@@ -333,7 +342,7 @@ dH = np.array(chain.monitor['delta_H'])
 gv.dataset.avg_data(np.exp(-dH))
 
 # %%
-m = np.array(chain.obs_chain['mag'])[:,0]
+m = np.array(chain.column('mag'))
 plt.plot(m[::100])
 
 gv.dataset.avg_data(m[::100]/6**3)
@@ -359,5 +368,9 @@ def tau(W):
 
 taus = [ tau(W) for W in range(0,1200,5) ]
 plt.errorbar(range(0,1200,5), gv.mean(taus), gv.sdev(taus), ls=' ', marker='.', color='red')
+
+# %%
+# Built-in autocorrelation estimator?
+lstats.tau_int(m)
 
 # %%

@@ -205,3 +205,15 @@ def test_tau_int_flags_an_unresolved_window():
     report = tau_int(ar1(0.999, 500, seed=2))
 
     assert not report.resolved
+
+
+def test_tau_int_repr_is_value_with_error():
+    # Prints as tau with its error in parenthetical notation (two significant
+    # digits of error), plus the window -- not the raw tuple with gamma.
+    gamma = np.ones(10)
+    assert repr(TauInt(4.5231, 0.1834, 23, True, gamma)) == "TauInt(tau=4.52(18), window=23)"
+    assert repr(TauInt(812.4, 73.2, 250, False, gamma)) == (
+        "TauInt(tau>=812(73), window=250, unresolved)"
+    )
+    assert repr(TauInt(0.5, 0.0, 0, True, gamma)) == "TauInt(tau=0.5(0), window=0)"
+    assert str(TauInt(4.5231, 0.1834, 23, True, gamma)) == "TauInt(tau=4.52(18), window=23)"

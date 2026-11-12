@@ -78,6 +78,21 @@ class TauInt(NamedTuple):
     resolved: bool
     gamma: np.ndarray  # normalized autocorrelation, gamma[0] = 1
 
+    def __repr__(self):
+        # TauInt(tau=4.52(18), window=23); `tau>=` and `unresolved` mark a
+        # lower bound.
+        bound = "=" if self.resolved else ">="
+        flag = "" if self.resolved else ", unresolved"
+        return f"TauInt(tau{bound}{_paren(self.tau, self.error)}, window={self.window}{flag})"
+
+
+def _paren(value, error):
+    # value(error) with two significant digits of error: 4.52(18), 812(73).
+    if not error > 0:
+        return f"{value:g}(0)"
+    decimals = max(1 - int(np.floor(np.log10(error))), 0)
+    return f"{value:.{decimals}f}({round(error * 10**decimals)})"
+
 
 def tau_int(series, window_factor=DEFAULT_WINDOW_FACTOR, max_lag=None):
     # tau_int = 1/2 + sum_{t>=1} Gamma(t)/Gamma(0), summed to Sokal's window:
