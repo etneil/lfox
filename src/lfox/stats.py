@@ -39,6 +39,12 @@ def jackknife(estimator, *columns, bin_size=1, **constants):
     # The estimate is the estimator on the full (truncated) sample; the error
     # is the jackknife standard error.  Both are float64, with the shape of
     # the estimator's output.
+    #
+    # Cost: N / bin_size + 1 evaluations, each on ~N samples.  On a long
+    # unbinned column, either choose bin_size against tau_int or bin first.
+    # Binning first means binning the *primary* observables and writing the
+    # estimator in terms of them -- jackknife(lambda m2, m4: ..., m2, m4) on
+    # bin means of m**2 and m**4 -- not passing bin means of m to binder(m).
     columns = [np.asarray(c, dtype=np.float64) for c in columns]
     n = len(columns[0])
     if any(len(c) != n for c in columns):

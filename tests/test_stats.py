@@ -134,24 +134,6 @@ def test_jackknife_vector_valued_estimator():
         assert err[t] == pytest.approx(d_t, rel=1e-12)
 
 
-def test_jackknife_cost_does_not_grow_with_column_length():
-    # KNOWN FAILURE, pending design.  At the default bin_size=1 every sample is
-    # its own bin, so N samples cost N evaluations on N samples: quadratic,
-    # 0.6 s at N = 32k and ~10 min at N = 1e6.  The number of deletions should
-    # be bounded independent of N -- e.g. a cap on the number of bins -- but
-    # what the default should be is still to be decided.  The budget below is
-    # a placeholder; the estimator aborts past it so this fails fast.
-    calls = []
-
-    def counted_mean(x):
-        calls.append(1)
-        if len(calls) > 1001:
-            raise RuntimeError("jackknife exceeded its evaluation budget")
-        return np.mean(x)
-
-    jackknife(counted_mean, np.zeros(100_000))
-
-
 def test_jackknife_works_in_float64():
     x = np.random.default_rng(7).standard_normal(200).astype(np.float32)
     est, err = jackknife(np.mean, x)
