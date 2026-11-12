@@ -62,53 +62,54 @@ import jax
 import jax.numpy as jnp
 
 import lfox.lattice as lat
-from lfox.action import Action
+from lfox.action import Action, Term
 from lfox.evolution import HMC, Chain, LeapfrogIntegrator
+from lfox.scalar import magnetization
 
 jax.config.update("jax_enable_x64", True)
 
 
-class ScalarAction(Action):
-    # NOTE: @staticmethod must sit *above* @jax.jit, or tracing breaks.
-    @staticmethod
-    @jax.jit
-    def _S(fields, params):
-        phi = fields[0]
+class Phi4(Term):
+    kappa: float
+    lamb: float
+
+    def density(self, phi):
         S = phi**2
         for ax in range(phi.d()):
-            S -= 2 * params["kappa"] * phi * phi.nn_field(ax)
-        S += params["lambda"] * (phi**2 - 1) ** 2
+            S -= 2 * self.kappa * phi * phi.nn_field(ax)
+        S += self.lamb * (phi**2 - 1) ** 2
         return S
 
 
 lattice = lat.SquareLattice(st_dims=(4, 4, 4))
 phi = lat.LatticeField(lattice=lattice, F=jnp.ones((4, 4, 4)))
 
-action = ScalarAction(field_names=["phi"], params={"kappa": 0.18169, "lambda": 1.3282})
+action = Action(Phi4(kappa=0.18169, lamb=1.3282))
 hmc = HMC(action=action, integrator=LeapfrogIntegrator(eps=0.1, Nstep=10))
 
 chain = Chain(
     evolver=hmc,
     seed=1,
     init_fields={"phi": phi},
-    observables={"magn": lambda fields, params: float(jnp.mean(fields["phi"].F))},
+    measure=[lambda fields, action: {"magn": magnetization(fields["phi"])}],
 )
 chain.warmup(100)
 chain.run(1000)
 
 print(f"acceptance: {chain.acceptance():.3f}")
-print(f"<phi>: {sum(chain.obs_chain['magn']) / len(chain.obs_chain['magn']):.5f}")
+print(f"<phi>: {chain.column('magn').mean():.5f}")
 ```
 
-Note that only `_S` was written by hand. The force `dS` used by the integrator is
+Note that only `density` was written by hand. The force `dS` used by the integrator is
 obtained by differentiating it.
 
 ## What's in the box
 
 - **`lfox.lattice`** — `Lattice` and `LatticeField`, with overloaded arithmetic 
   and `nn_field(axis, shift)` for nearest-neighbor hops with (anti-)periodic boundary conditions.
-- **`lfox.action`** — `Action`, the action functional. Subclass it and implement `_S`;
-  you get `S`, `S_field`, and autodiff `dS` for free. Actions compose with `+`.
+- **`lfox.action`** — `Action`, the action functional, built from `Term`s. Subclass `Term`
+  and implement `density`; you get `S`, `S_field`, and autodiff `dS` for free. Terms and
+  actions compose with `+`.
 - **`lfox.evolution`** — `HMC` (a pure, jittable Markov transition kernel),
   `LeapfrogIntegrator` / `OmelyanIntegrator`, and `Chain`, the host-side driver that owns
   the RNG key, saved configurations, diagnostics, and observable measurement.
