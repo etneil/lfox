@@ -88,9 +88,13 @@ def xi_2nd(m, Gp, volume, L):
     #
     #   xi = sqrt(chi / <G(p_min)> - 1) / (2 sin(pi / L)),
     #
-    # with `Gp` a column of G(p_min) along an axis of extent L.
-    chi = susceptibility(m, volume)
-    return np.sqrt(chi / np.mean(Gp) - 1) / (2 * np.sin(np.pi / L))
+    # with `Gp` a column of G(p_min) along an axis of extent L.  xi exists
+    # only while chi >= <G(p_min)> > 0 (equality is the infinite-mass limit,
+    # xi = 0); outside that, and for nan input, it is a quiet nan.
+    chi, gp = susceptibility(m, volume), np.mean(Gp)
+    if not chi >= gp > 0:
+        return np.nan
+    return np.sqrt(chi / gp - 1) / (2 * np.sin(np.pi / L))
 
 
 def effective_mass(C):

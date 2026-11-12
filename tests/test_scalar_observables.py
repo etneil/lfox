@@ -187,21 +187,32 @@ def test_xi_2nd_of_the_free_field():
 
 
 def test_xi_2nd_is_nan_where_it_does_not_exist():
-    # KNOWN FAILURE.  xi exists only while chi > <G(p_min)> > 0.  Outside that
-    # -- a uniform cold start has G(p_min) = 0; a correlator that does not fall
-    # with distance has chi < G(p_min) -- it should be a quiet nan, not an
-    # inf that looks like a measurement, nor a RuntimeWarning per jackknife
-    # deletion.
+    # xi exists only while chi >= <G(p_min)> > 0.  Outside that -- a uniform
+    # cold start has G(p_min) = 0; a correlator that does not fall with
+    # distance has chi < G(p_min) -- it should be a quiet nan, not an inf that
+    # looks like a measurement, nor a RuntimeWarning per jackknife deletion.
     V, L = 16, 4
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         cold = xi_2nd(np.ones(4), np.zeros(4), volume=V, L=L)  # chi = 0, Gp = 0
         spiky = xi_2nd(np.array([1.0, -1.0]), np.zeros(2), volume=V, L=L)  # Gp = 0
         flat = xi_2nd(np.array([0.1, -0.1]), np.ones(2), volume=V, L=L)  # chi < Gp
+        missing = xi_2nd(np.array([np.nan, 1.0]), np.ones(2), volume=V, L=L)
 
     assert np.isnan(cold)
     assert np.isnan(spiky)
     assert np.isnan(flat)
+    assert np.isnan(missing)
+
+
+def test_xi_2nd_is_zero_in_the_infinite_mass_limit():
+    # chi == <G(p_min)>: the correlator is a delta function in space, so xi = 0
+    # exactly -- a legitimate value at the edge of the domain, not a nan.
+    V, L = 16, 4
+    m = np.array([0.25, -0.25])  # chi = V <m^2> = 1
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert xi_2nd(m, np.ones(2), volume=V, L=L) == 0.0
 
 
 def test_effective_mass_of_the_free_correlator_is_the_pole_mass():
