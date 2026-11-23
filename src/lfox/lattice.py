@@ -252,40 +252,84 @@ def _pow_bc(left, right, exponent):
     return _mul_bc(left, right, None)
 
 
+# --- Internal axes ------------------------------------------------------------
+
+
+def _axes(axes):
+    # {"spin": 4} or (("spin", 4),) -> (("spin", 4),): hashable, ordered.
+    pairs = tuple(axes.items()) if isinstance(axes, dict) else tuple(axes)
+    if any(not isinstance(name, str) or int(size) != size or size < 1
+           for name, size in pairs):
+        raise ValueError(f"axes must map names to positive sizes, got {axes!r}")
+    if len({name for name, _ in pairs}) != len(pairs):
+        raise ValueError(f"repeated axis name in {axes!r}")
+    return tuple((name, int(size)) for name, size in pairs)
+
+
+def _merge_axes(left, right):
+    # The left operand's axes, then any extra axes of the right operand.
+    sizes = dict(left)
+    for name, size in right:
+        if sizes.setdefault(name, size) != size:
+            raise ValueError(
+                f"axis {name!r} has size {sizes[name]} on one side and {size} on the other"
+            )
+    return tuple(sizes.items())
+
+
 class LatticeField(eqx.Module):
+    """A field on a lattice: values at every site, with named internal axes.
+
+    `.F` has the spacetime (site) dims first, then the internal axes in the
+    order declared by `axes`.  Arithmetic between fields aligns internal axes
+    by name, never by position.  (Storage currently matches `.F`; anything
+    that depends on the layout goes through `_aligned` and the hop, so it can
+    change without changing what users see.)
+    """
+
     lattice: Lattice = eqx.field(static=True)
-    F: jax.Array = eqx.field(converter=jax.numpy.asarray)
-    #    bc: Optional[jax.Array] = eqx.field(default=(), converter=jax.numpy.asarray)
-    bc: Optional[tuple[int]] = eqx.field(default=(), static=True)
-    indices: Optional[tuple[int]] = eqx.field(default=(), static=True)
+    F: jax.Array
+    bc: tuple = eqx.field(default=(), static=True)
+    axes: tuple = eqx.field(default=(), static=True)
 
     def __post_init__(self):
-        # Allow e.g. unit field by just passing 1,
-        # broadcast to size of lattice
+        # (Equinox runs this before any field converter, so normalize here.)
+        self.axes = _axes(self.axes)
 
-        if type(self.F) != jnp.array:
-            #        if self.F.shape == ():
-            self.F = self.F * jnp.ones(self.dims())
+        F = jnp.asarray(self.F)
+        if not jnp.issubdtype(F.dtype, jnp.inexact):
+            F = F.astype(float)  # an integer field would stop autodiff (dS)
+        if F.ndim == 0:
+            F = jnp.broadcast_to(F, self.dims())  # F=1 is a unit field
+        elif F.shape != self.dims():
+            raise ValueError(
+                f"F has shape {F.shape}, but this field has shape {self.dims()} "
+                f"(lattice {self.lattice._dims}, axes {self.axes})"
+            )
+        self.F = F
 
         self._set_default_BC()
-
-        if type(self.lattice) is dict:
-            # Workaround for using dataclasses.asdict
-            self.lattice = Lattice(**self.lattice)
 
     def _set_default_BC(self):
         # Default periodic; otherwise validated and normalized (see Phase).
         self.bc = _boundaries(self.bc, len(self.lattice.st_dims))
 
     def dims(self):
-        if len(self.indices) > 0:
-            return self.lattice._dims + tuple(self.indices)
-        else:
-            return self.lattice._dims
+        return self.lattice._dims + tuple(size for _, size in self.axes)
 
-    def st_dims(self):
-        # For broadcasting against spacetime indices
-        return self.lattice._dims + (1,) * len(self.indices)
+    def _aligned(self, axes):
+        # F rearranged to the internal axes `axes` (a superset of this field's
+        # own), with size-1 axes where this field has none, for broadcasting.
+        if axes == self.axes:
+            return self.F
+        names = [name for name, _ in self.axes]
+        sites = len(self.lattice._dims)
+        own = [names.index(name) for name, _ in axes if name in names]
+        F = jnp.transpose(self.F, tuple(range(sites)) + tuple(sites + i for i in own))
+        return F.reshape(
+            self.lattice._dims
+            + tuple(size if name in names else 1 for name, size in axes)
+        )
 
     def d(self):
         # Return number of space-time dimensions
@@ -293,16 +337,31 @@ class LatticeField(eqx.Module):
 
     @staticmethod
     def _field_op(f, bc_rule, rev=False):
-        # `other` may be a field, or a raw scalar or array (no bc: None).  The
-        # bc rule sees both sides' bc in operator order, plus `other`'s values.
+        # `other` is a field, whose internal axes are aligned by name, or a
+        # raw scalar or array (no bc: None), which must match `.F` exactly.
+        # The bc rule sees both sides' bc in operator order, plus `other`'s
+        # values.
         def op(self, other):
-            o = getattr(other, "F", other)
-            other_bc = getattr(other, "bc", None)
-            if rev:
-                new_F, bc = f(o, self.F), bc_rule(other_bc, self.bc, o)
-            else:
-                new_F, bc = f(self.F, o), bc_rule(self.bc, other_bc, o)
+            if isinstance(other, LatticeField):
+                if other.lattice != self.lattice:
+                    raise ValueError(
+                        f"fields on different lattices: {self.lattice} and {other.lattice}"
+                    )
+                left, right = (other, self) if rev else (self, other)
+                axes = _merge_axes(left.axes, right.axes)
+                new_F = f(left._aligned(axes), right._aligned(axes))
+                bc = bc_rule(left.bc, right.bc, other.F)
+                return dataclasses.replace(self, F=new_F, bc=bc, axes=axes)
 
+            if jnp.ndim(other) != 0 and jnp.shape(other) != self.F.shape:
+                raise ValueError(
+                    f"raw array has shape {jnp.shape(other)}; it must be a scalar "
+                    f"or exactly the field's shape {self.F.shape}"
+                )
+            if rev:
+                new_F, bc = f(other, self.F), bc_rule(None, self.bc, other)
+            else:
+                new_F, bc = f(self.F, other), bc_rule(self.bc, None, other)
             return self.copy_new_F(new_F, bc=bc)
 
         return op
