@@ -387,30 +387,51 @@ class LatticeField(eqx.Module):
 
     @staticmethod
     @partial(jax.jit, static_argnums=(1, 2, 3, 4))
-    def _nn_field(field, lattice, axis, shift, bc):
+    def _nn_field(field, lattice, axis, shift, bc, twist=None):
         # Site x receives the value from x - shift.  Writing shift = q L + r
         # with 0 <= r < L, sites x < r wrapped q + 1 times and the rest q
         # times, so the boundary factor is bc**-(q+1) on the first r slices and
         # bc**-q on the others.  (Signs show up at the target, not the source.)
+        # A twist multiplies each by exp(i twist)**winding; it is traced.
         nn_shift = lattice.shift(field, axis=axis, shift=shift)
         q, r = divmod(shift, lattice.st_dims[axis])
-        f_lo, f_hi = _wrap_factor(bc[axis], -q - 1), _wrap_factor(bc[axis], -q)
+
+        def factor(winding):
+            f = _wrap_factor(bc[axis], winding)
+            if twist is None or winding == 0:
+                return f
+            return f * jnp.exp(1j * twist * winding)
 
         def scaled(x, f):
-            return x if f == 1 else jnp.zeros_like(x) if f == 0 else f * x
+            if isinstance(f, numbers.Number):  # static: skip trivial factors
+                if f == 1:
+                    return x
+                if f == 0:
+                    return jnp.zeros_like(x)
+            return f * x
 
+        f_lo, f_hi = factor(-q - 1), factor(-q)
         if r == 0:
             return scaled(nn_shift, f_hi)
         lo, hi = jnp.split(nn_shift, [r], axis=axis)
         return jnp.concatenate([scaled(lo, f_lo), scaled(hi, f_hi)], axis=axis)
 
-    def nn_field(self, axis, shift=1):
+    def nn_field(self, axis, shift=1, twist=None):
+        """The field hopped by `shift` sites along `axis`: site x gets x - shift.
+
+        Values that wrap pick up the boundary phase.  `twist` (radians) adds
+        an extra phase exp(i twist) at the boundary; it is traced, so it can
+        be differentiated and changing it does not recompile.
+        """
+        if twist is not None and self.bc[axis] is DIRICHLET:
+            raise ValueError(f"cannot twist axis {axis}: it has a Dirichlet boundary")
         shifted_field = self._nn_field(
             self.F,
             lattice=self.lattice,
             axis=axis,
             shift=shift,
             bc=self.bc,
+            twist=twist,
         )
 
         return self.copy_new_F(shifted_field)
