@@ -1,17 +1,20 @@
 ## Architecture
 
-These are running architecture notes and may be supplanted as progress is made.  For now they are kept here for reference.  Last revised 2026-11-11, on branch `scalar`.
+These are running architecture notes and may be supplanted as progress is made.  For now they are kept here for reference.  Last revised 2026-11-22, on branch `field-shape`.
 
 Package layout: `lattice.py` and `action.py` are the core; `evolution/` holds Markov-chain algorithms and the `Chain` driver; `stats.py` holds Monte Carlo statistics; `scalar/` holds theory-specific observables; `fermions/` is stranded (see below).
 
 ### Lattice + LatticeField (`src/lfox/lattice.py`)
 
-- `Lattice(eqx.Module)` holds `st_dims` (spacetime extents, a tuple) and `_dims` (physical dims; may differ from `st_dims` when there is a non-trivial unit cell, as in `HoneycombLattice`).  It carries no JAX arrays, so it can be a static field and compares/hashes by value: the boundary-condition coordinate grid is computed on demand by `bc_coord(axis)`.  `volume` is the number of sites, including unit-cell structure.
+- `Lattice(eqx.Module)` holds `st_dims` (spacetime extents, a tuple) and `_dims` (physical dims; may differ from `st_dims` when there is a non-trivial unit cell, as in `HoneycombLattice`).  It carries no JAX arrays, so it can be a static field and compares/hashes by value.  `volume` is the number of sites, including unit-cell structure.
 - Concrete lattices implement `shift(field, axis, shift)`. `SquareLattice` uses `jnp.roll` (its red-black `rb_split`/`rb_combine` are stubs); `HoneycombLattice` adds A/B unit-cell handling on axis 0 (note the FIXME there — partially correct).
-- `LatticeField(eqx.Module)` carries a `Lattice` (static field), the array `F`, boundary conditions `bc` (static tuple of ±1 per axis, default periodic), and optional `indices` (static; extra trailing dims for spin/color/etc.).  A scalar `F` is broadcast to the lattice shape, so `LatticeField(lattice=L, F=1)` is a unit field.  Arithmetic operators are overloaded via `_field_op` and dispatch on `getattr(other, 'F', other)`, so you can mix `LatticeField` with scalars or arrays freely.
-- `nn_field(axis, shift=1)` is the primary kinematic primitive: nearest-neighbor shift with global boundary-condition winding factor applied. The hot path is `_nn_field`, a JIT-compiled staticmethod with the lattice/axis/shift/bc/st_dims passed as static args.
-- `d()` is the number of spacetime dimensions; `dims()` includes any internal `indices`.
-- `LatticeField` is immutable (Equinox); to produce a modified copy, use `copy_new_F(new_F)` (which round-trips through `dataclasses.replace`).
+- `LatticeField(eqx.Module)` carries a `Lattice` (static), the array `F`, boundary conditions `bc` (static, one per spacetime axis, default periodic), and named internal axes `axes` (static tuple of `(name, size)` pairs; `{"spin": 4}` also accepted).  The design spec is the module docstring of `tests/test_lattice_field.py`.
+  - **Shape.** `F` is a scalar (a constant field: `F=1` is a unit field) or exactly `dims()` = lattice dims + internal axis sizes; anything else is a `ValueError`.  Integer `F` becomes float.  `.F` is the user-facing view (sites, then internal axes in declared order); storage matches it for now, and only `_aligned` and the hop depend on the layout, so it can change (e.g. internal axes leading) after benchmarking.
+  - **Arithmetic** (`_field_op`): fields must share a lattice; internal axes align by *name* -- an axis on one side only broadcasts, disjoint axes give an outer product (left operand's axes first), one name with two sizes is an error.  A raw array must be a scalar or exactly `.F.shape`.
+  - **Boundary conditions.** Each entry is a `Phase` -- `lat.phase(n, d)` = exp(i pi n/d), stored as an exact `Fraction` of pi mod 2 so equal BCs hash and compare equal (pytree structure must match exactly through `lax.cond`/`scan`) -- or `lat.DIRICHLET` (spelled 0: no site past the edge).  Spellings 1/-1/0 are normalized at construction; anything else raises.  Under arithmetic the product rule applies (`*`, `/`, integer `**`, `conj` act on phases; Dirichlet absorbs); `+`/`-` need equal BCs; a raw scalar is a periodic constant (adds only to periodic/Dirichlet axes), a raw array is trusted; a non-integer power needs a periodic or Dirichlet field (branch cut).
+- `nn_field(axis, shift=1, twist=None)` is the primary kinematic primitive.  Site x gets the value from x - shift; values that wrapped pick up the boundary factor, applied only to the wrapped slab (`shift = qL + r`: bc^-(q+1) on the first r slices, bc^-q on the rest).  `twist` (radians) is an extra traced boundary phase exp(i twist): differentiable, no recompile; not allowed on a Dirichlet axis.  The hot path is `_nn_field`, a JIT-compiled staticmethod with lattice/axis/shift/bc static.
+- `d()` is the number of spacetime dimensions; `dims()` includes internal axes.
+- `LatticeField` is immutable (Equinox); to produce a modified copy, use `copy_new_F(new_F, bc=None)` (`dataclasses.replace`, so shape checks rerun).
 
 ### Action (`src/lfox/action.py`)
 
@@ -55,7 +58,7 @@ Host-side NumPy at float64 on *columns* (leading axis = MC time, as from `Chain.
 
 ### Fermions (`src/lfox/fermions/`)
 
-- `spin.py`: DeGrand-Rossi gamma matrices (`Gamma_0..3,5`) and `Dirac4DFermionField` (a `LatticeField` with a fixed `indices=(4,)` Dirac index). Bilinears are JIT-compiled `jnp.einsum`s. **`import lfox.fermions.spin` currently raises** (`AttributeError: ... '_tree_flatten'`): it registers pytree hooks that only ever existed on the now-deleted `OldLatticeField`. `import lfox.fermions` itself is clean because nothing is re-exported. The whole fermion subpackage is stranded on the wrong side of the legacy migration; fixing it is `PLAN.md` step 4.
+- `spin.py`: DeGrand-Rossi gamma matrices (`Gamma_0..3,5`) and `Dirac4DFermionField` (a `LatticeField` with a fixed `indices=(4,)` Dirac index; `indices` is now `axes`, so this needs porting too). Bilinears are JIT-compiled `jnp.einsum`s. **`import lfox.fermions.spin` currently raises** (`AttributeError: ... '_tree_flatten'`): it registers pytree hooks that only ever existed on the now-deleted `OldLatticeField`. `import lfox.fermions` itself is clean because nothing is re-exported. The whole fermion subpackage is stranded on the wrong side of the legacy migration; fixing it is `PLAN.md` step 4.
 - `wilson.py`: `WilsonDiracOp` builds Dslash from gamma projectors and `nn_field`. `shift_fermion` is the gauge-coupling hook: override it to introduce link variables.
 - `solver.py`: `MRSolver` (minimal-residual) for `D ψ = χ`. The `_MR_step` is JIT-compiled with `static_argnums=(0,)` — the solver instance is treated as static, so creating new solver instances per call is wasteful.
 - The pseudofermion *mechanics* (sampled fields, `draw`, hand-written `gradient`) already exist in `Action` and are exercised by `integration/pseudofermion_marginal.py`; what is missing is the Dirac operator side.
@@ -70,7 +73,7 @@ Host-side NumPy at float64 on *columns* (leading axis = MC time, as from `Chain.
 
 - Everything performance-critical is `jax.jit`-compiled.  Modules (`Action`, `Evolver`, integrators) are passed to jitted methods as pytrees: numeric fields (couplings, `eps`) are traced leaves, and `eqx.field(static=True)` fields go into the compilation key.  Changing a static field retraces; changing a coupling does not.  Adding mutable state to these `eqx.Module`s will break this.
 - `static_argnums` is still used for genuinely static arguments: lattice/axis/shift in `_nn_field`, the closures passed to `_integrate`, the field tuple in `dS`, `traj` in `evolve_many`.
-- Boundary conditions: `bc` is a tuple of ±1 (only (anti-)periodic supported). Winding factor is `bc[axis]**winding` where `winding = (coords - shift) // L` (signs show up at the target site).
+- Boundary conditions: psi(x + L) = bc * psi(x), so a value that wraps backwards picks up bc^-1 (signs show up at the target site).  See the `LatticeField` notes above.
 - Field arithmetic and `nn_field` always return new `LatticeField` instances; never mutate `self.F` — `LatticeField` is a frozen `eqx.Module` and assignment raises.
 - Field collections at every public boundary are dicts keyed by external field name; only author hooks see roles.
 - The pure/stateful boundary is the jit boundary. `Lattice`, `LatticeField`, `Term`, `Action`, `MDIntegrator` and `Evolver` are pure `eqx.Module`s; `Chain` is the one stateful class, and it lives entirely outside jit.  Statistics (`lfox.stats`, ensemble estimators) are host-side NumPy, after the chain.
