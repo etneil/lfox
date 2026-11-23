@@ -33,10 +33,14 @@ conditions, and how all three behave under arithmetic and hops.
         zero but "no site past the edge": a hop off the edge gives 0, while
         no real site is zero, so dividing by a Dirichlet field is fine.
       - under arithmetic, `*`, `/`, `**` and `conj` act on the phases (the
-        product rule); Dirichlet absorbs under all of them.  `+` and `-`
-        require equal boundary conditions.  Raw scalars and arrays are
-        neutral.  The invariant behind all of it: hopping a product is the
-        product of the hops.
+        product rule); Dirichlet absorbs under all of them.  A non-integer
+        power has no single boundary phase (the branch cut makes it vary
+        site by site), so it needs a periodic or Dirichlet field.  `+` and
+        `-` require equal boundary conditions.  A raw scalar is a constant,
+        i.e. periodic: neutral under `*` and `/`, and addable only to
+        periodic or Dirichlet axes.  A raw array is taken on trust.  The
+        invariant behind all of it: hopping a product is the product of the
+        hops.
   * **Twist.**  `nn_field(axis, shift, twist=theta)` applies an extra
     boundary phase exp(i theta) on top of `bc`.  `theta` is traced, so it can
     be differentiated and changing it does not recompile.  Twisting a
@@ -336,6 +340,30 @@ def test_product_rule_on_the_bc_itself(lat4):
     assert (a.conj() * a).bc == (1, 1, 1)
 
 
+def test_a_non_integer_power_needs_a_periodic_field():
+    # sqrt of an antiperiodic field has no well-defined boundary phase.  An
+    # integral float is an integer power; Dirichlet absorbs as usual.
+    L = lat.SquareLattice(st_dims=(5,))
+    F = _rand(11, (5,))
+    periodic = lat.LatticeField(lattice=L, F=F)
+    anti = lat.LatticeField(lattice=L, F=F, bc=(-1,))
+    dirichlet = lat.LatticeField(lattice=L, F=F, bc=(0,))
+
+    assert (periodic**0.5).bc == (1,)
+    assert (anti**2.0).bc == (1,)
+    assert (dirichlet**0.5).bc == (lat.DIRICHLET,)
+    assert (periodic**periodic).bc == (1,)
+    with pytest.raises(ValueError, match="boundary"):
+        anti**0.5
+    with pytest.raises(ValueError, match="boundary"):
+        periodic**anti
+
+
+def test_signs_print_as_numbers(lat4):
+    phi = lat.LatticeField(lattice=lat4, F=1.0, bc=(1, -1, lat.phase(1, 3)))
+    assert repr(phi.bc) == "(1, -1, phase(1, 3))"
+
+
 def test_sums_require_equal_boundary_conditions(lat4):
     a = lat.LatticeField(lattice=lat4, F=1.0, bc=(1, 1, -1))
     b = lat.LatticeField(lattice=lat4, F=1.0, bc=(1, 1, 1))
@@ -348,9 +376,26 @@ def test_sums_require_equal_boundary_conditions(lat4):
 
 
 def test_raw_scalars_and_arrays_are_neutral(lat4):
+    # A raw array carries no boundary condition and is taken on trust (HMC
+    # adds raw momenta to fields).  A scalar is a constant -- a periodic field
+    # -- so it is neutral under * and /.
     a = lat.LatticeField(lattice=lat4, F=1.0, bc=(1, 1, -1))
-    for result in (2.0 * a, a + 1.0, 1.0 - a, 6.0 / a, a * jnp.ones((4, 4, 4))):
+    ones = jnp.ones((4, 4, 4))
+    for result in (2.0 * a, 6.0 / a, a * ones, a + ones, ones - a):
         assert result.bc == (1, 1, -1)
+
+
+def test_a_constant_adds_only_to_periodic_or_dirichlet_axes(lat4):
+    # A constant is periodic, so adding one to an antiperiodic field leaves no
+    # consistent boundary condition.
+    a = lat.LatticeField(lattice=lat4, F=1.0, bc=(1, 1, -1))
+    for add in (lambda: a + 1.0, lambda: 1.0 - a, lambda: a - jnp.array(2.0)):
+        with pytest.raises(ValueError, match="boundary"):
+            add()
+
+    p = lat.LatticeField(lattice=lat4, F=1.0, bc=(1, 0, 1))
+    assert (p + 1.0).bc == (1, lat.DIRICHLET, 1)
+    assert (1.0 - p).bc == (1, lat.DIRICHLET, 1)
 
 
 def test_dirichlet_absorbs_and_division_is_fine():
