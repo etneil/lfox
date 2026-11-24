@@ -366,8 +366,8 @@ plt.errorbar(range(0,1600), gv.mean(gam), gv.sdev(gam), ls=' ', marker='.')
 def tau(W):
     return 0.5 + np.sum(gam[:W])
 
-taus = [ tau(W) for W in range(0,1200,5) ]
-plt.errorbar(range(0,1200,5), gv.mean(taus), gv.sdev(taus), ls=' ', marker='.', color='red')
+taus = [ tau(W) for W in range(0,1200,20) ]
+plt.errorbar(range(0,1200,20), gv.mean(taus), gv.sdev(taus), ls=' ', marker='.', color='red')
 
 # %%
 # Built-in autocorrelation estimator?
