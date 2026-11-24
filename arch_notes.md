@@ -2,7 +2,7 @@
 
 These are running architecture notes and may be supplanted as progress is made.  For now they are kept here for reference.  Last revised 2026-11-23, on branch `indices`.  Design decisions for internal axes (including deferred matrix-valued fields) are in `axes_design.md`.
 
-Package layout: `lattice.py` and `action.py` are the core; `evolution/` holds Markov-chain algorithms and the `Chain` driver; `stats.py` holds Monte Carlo statistics; `scalar/` holds theory-specific observables; `fermions/` is stranded (see below).
+Package layout: `lattice.py` and `action.py` are the core; `evolution/` holds Markov-chain algorithms and the `Chain` driver; `stats.py` holds Monte Carlo statistics; `scalar/` holds theory-specific observables; `fermions/` holds gamma matrices and Dirac operators; `linalg.py` holds linear algebra on fields.
 
 ### Lattice + LatticeField (`src/lfox/lattice.py`)
 
@@ -61,12 +61,15 @@ Host-side NumPy at float64 on *columns* (leading axis = MC time, as from `Chain.
 - Ensemble estimators return a quiet `nan` where the quantity does not exist (`xi_2nd` outside χ ≥ ⟨G(p_min)⟩ > 0; `effective_mass` at t = 0 and where noise pushes the cosh ratio below 1), rather than `inf` or a warning per jackknife deletion.
 - **O(N) extends this module**; the plain scalar is N = 1.  Internal axes trail in `magnetization`; G(p), C(t) and `nn_product` sum over components; estimators contract the trailing axes of their columns, so χ = V(⟨m·m⟩ − ⟨m⟩·⟨m⟩) (summed over components, no 1/N) and Binder U = 1 − N/(N+2)·⟨(m·m)²⟩/⟨m·m⟩² (N from the column shape).  V is always `lattice.volume`, never `F.size`.  The nonlinear sigma model waits for the manifold field-type protocol.
 
-### Fermions (`src/lfox/fermions/`)
+### Fermions (`src/lfox/fermions/`) and linear algebra (`src/lfox/linalg.py`)
 
-- `spin.py`: DeGrand-Rossi gamma matrices (`Gamma_0..3,5`) and `Dirac4DFermionField` (a `LatticeField` with a fixed `indices=(4,)` Dirac index; `indices` is now `axes`, so this needs porting too). Bilinears are JIT-compiled `jnp.einsum`s. **`import lfox.fermions.spin` currently raises** (`AttributeError: ... '_tree_flatten'`): it registers pytree hooks that only ever existed on the now-deleted `OldLatticeField`. `import lfox.fermions` itself is clean because nothing is re-exported. The whole fermion subpackage is stranded on the wrong side of the legacy migration; fixing it is `PLAN.md` step 4.
-- `wilson.py`: `WilsonDiracOp` builds Dslash from gamma projectors and `nn_field`. `shift_fermion` is the gauge-coupling hook: override it to introduce link variables.
-- `solver.py`: `MRSolver` (minimal-residual) for `D ψ = χ`. The `_MR_step` is JIT-compiled with `static_argnums=(0,)` — the solver instance is treated as static, so creating new solver instances per call is wasteful.
-- The pseudofermion *mechanics* (sampled fields, `draw`, hand-written `gradient`) already exist in `Action` and are exercised by `integration/pseudofermion_marginal.py`; what is missing is the Dirac operator side.
+Rewritten on branch `fermions`; the design, and the order of the remaining work (CG with diagnostics, diagnostics plumbing into the HMC monitor, pseudofermions), is in `fermions_design.md`.  The legacy `Dirac4DFermionField`, `WilsonDiracOp` and `MRSolver` are deleted.
+
+- A spinor is a plain `LatticeField` with a `"spin"` axis (usually complex, antiperiodic in time); there is no fermion subclass.
+- `gamma.py`: `gammas(d)` (shape `(d, s, s)`, `gammas(d)[mu]` goes with lattice axis mu): Pauli in d = 2, 3, DeGrand–Rossi in d = 4.  `gamma5(d)` for even d: σ3 = −iγ0γ1 in d = 2, γ0γ1γ2γ3 = diag(1, 1, −1, −1) in d = 4.
+- `dirac.py`: `wilson(psi, kappa)`, hopping form ψ − κ Σ_μ [(1 − γ_μ) ψ(x+μ̂) + (1 + γ_μ) ψ(x−μ̂)], acting on the spin axis via `lat.einsum`; other axes pass through.  ψ(x+μ̂) is `psi.nn_field(mu, -1)`.  Operators are plain linear functions of fields, closed over their background (`lambda psi: wilson(psi, kappa) + g * sigma * psi`).
+- `lfox.linalg`: `dense(A, like)` (the matrix in `.F.ravel()` order, for small lattices) and `dagger(A, like)` (the adjoint of any linear operator, by `jax.linear_transpose` and conjugation; it does not assume γ5-hermiticity, which a pseudoscalar coupling breaks).
+- Gotcha met while writing `wilson`: a sum of fields must not start from `0` (or use `sum()`), because a constant cannot be added to an antiperiodic field.
 
 ### Tests and integration
 

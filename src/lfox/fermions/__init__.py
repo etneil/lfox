@@ -1,8 +1,9 @@
-# SPDX-FileCopyrightText: 2023-present Ethan Neil <ethan.neil@colorado.edu>
-#
-# SPDX-License-Identifier: MIT
-#
-# Experimental and incomplete: the modules in this subpackage have not yet been
-# migrated off the legacy LatticeField pytree registration, so importing
-# lfox.fermions.spin (and therefore .wilson / .solver) currently fails. Nothing
-# is re-exported here so that `import lfox` stays clean; see PLAN.md step 4.
+"""Fermions: gamma matrices and Dirac operators.
+
+A spinor is a plain `LatticeField` with a "spin" axis.  See fermions_design.md.
+"""
+
+from lfox.fermions.dirac import wilson
+from lfox.fermions.gamma import gamma5, gammas
+
+__all__ = ["gamma5", "gammas", "wilson"]
