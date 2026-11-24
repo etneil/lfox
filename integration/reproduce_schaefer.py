@@ -201,7 +201,7 @@ def mag_obs(fields, act):
 
 
 # %%
-# %%prun -s cumulative
+# %%prun -s cumulative -l 20
 
 # Second test case: figure 2.3
 d = 3
@@ -254,7 +254,7 @@ plt.errorbar(all_eps**2, gv.mean(m2_HMD)*6**3, gv.sdev(m2_HMD)*6**3, ls=' ', mar
 plt.errorbar(all_eps**2, gv.mean(m2_HMC)*6**3, gv.sdev(m2_HMC)*6**3, ls=' ', marker='*', color='forestgreen', label='HMC')
 
 plt.xlim(0,0.07)
-plt.xlabel('$\epsilon^2$')
+plt.xlabel('$\\epsilon^2$')
 plt.ylabel('$<m^2>$')
 plt.legend()
 

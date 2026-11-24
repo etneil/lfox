@@ -154,6 +154,13 @@ init_fields = {
 
 NTRAJ, MEAS, SAVE, NBIN = 200_000, 20, 200, 50
 
+def test_obs(fields, action):
+    return {
+        "phi2": (jnp.mean(fields["phi"].F**2)),
+        "phi4": (jnp.mean(fields["phi"].F**4)),
+        "S_pf": Action(action["Pseudofermion"]).S(fields) / V,
+    }
+
 observables = {
     "phi2": [lambda f, S: float(jnp.mean(f["phi"].F ** 2)), MEAS],
     "phi4": [lambda f, S: float(jnp.mean(f["phi"].F ** 4)), MEAS],
@@ -167,7 +174,8 @@ def run(eps, Nstep, seed):
         evolver=hmc,
         seed=seed,
         init_fields=init_fields,
-        observables=observables,
+#        observables=observables,
+        measure=[(test_obs, MEAS)],
         save_freq=SAVE,
     )
     chain.warmup(500)
@@ -209,7 +217,8 @@ regimes = {
 
 # %%
 def measured(chain):
-    out = {name: binned(chain.obs_chain[name]) for name in observables}
+    out = {name: binned(chain.column(name)) for name in ("phi2", "phi4", "S_pf")}
+#    out = {name: binned(chain.obs_chain[name]) for name in observables}
     dH = np.asarray(chain.monitor["delta_H"][-chain.traj :])
     out["exp(-dH)"] = binned(np.exp(-dH))
 
@@ -251,3 +260,5 @@ for ax, (label, chain) in zip(axes, regimes.items()):
 axes[0].set_ylabel(r"$p(\phi)$")
 axes[0].legend()
 plt.tight_layout()
+
+# %%
