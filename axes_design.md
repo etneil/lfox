@@ -36,7 +36,7 @@ Because `dot` and `vdot` default to every shared axis, a term can be written wit
 what the axis is called. For example, `phi.dot(phi.nn_field(mu))` works for any N and any
 axis name, including N = 1.
 
-### `lat.einsum(pattern, *operands, axes=None)`
+### `lat.einsum(pattern, *operands, axes=None, out_axes=None)`
 
 This is the general engine. `contract`, `dot` and `vdot` are thin wrappers over it.
 
@@ -51,19 +51,41 @@ This is the general engine. `contract`, `dot` and `vdot` are thin wrappers over 
   - At least one operand must be a field.
 - **Binding is per operand.** Labels are local to the call, as in numpy.
   - A *field's* labels bind to the axes listed in `axes=` that it has, in the order listed
-    there. Its term must have one label for each such axis. With `axes=None`, a field binds
-    all of its axes in `phi.axes` order.
+    there. Its term must have one label for each such axis. A listed axis that no field has
+    is an error.
+  - `axes=None` is allowed only when every field has at most one internal axis; that field
+    then binds its one axis. A field with two or more axes needs `axes=`, so binding never
+    depends on the order a field was declared in. With equal sizes (O(4) with spin) that
+    order would be a silent bug.
   - A *raw array's* labels bind to all of its dimensions, in order.
 - **Unlisted axes pass through.** They are aligned by name and elementwise, exactly like `*`,
   and are never summed: they behave like spacetime.
 - **One label, one axis name.** A label bound to differently named axes on different fields
   is an error, even if the sizes match. A deliberate cross-space contraction goes through an
   explicit constant (a δ or embedding matrix).
-- **Output naming.**
+- **Output naming** never depends on the order of `axes=`; that has one job, binding.
   - An output label bound to a field axis keeps that axis's name.
-  - Labels carried only by constants fill the listed axes not already used by the output, in
-    `axes=` order.
-  - If that is ambiguous, or the counts don't match, it is an error asking for `axes=`.
+  - A label carried only by constants is named by what those constants touch. Start at the
+    label, step to every label that shares a constant with it, and keep stepping; stop at
+    field-bound labels and collect their axis names. Exactly one name, of the label's size, is
+    the label's name. None, several, or a size mismatch (a rectangular constant builds a new
+    space) is an error that points to `out_axes`. Sizes never choose between candidates.
+  - `out_axes` names the output labels explicitly, in order. Names the fields already fix
+    must agree. It is needed for genuinely ambiguous cases, and to introduce a new space
+    (a Clebsch–Gordan-like constant).
+  - The result may not repeat a name (matrix-valued fields are deferred), and every named
+    axis must match the size of any field axis with that name.
+
+  | pattern | `i` reaches | name |
+  |---|---|---|
+  | γ_ij ψ_j, `"ij,j->i"` | j → spin | spin |
+  | (γψ)(φ·χ), `"ij,j,k,k->i"` | j → spin (k is never reached) | spin |
+  | γ_μ γ_ν ψ, `"ij,jk,k->i"` | j, then k → spin | spin |
+  | ε cross product, `"abc,a,b->c"` | a, b → `a` | a |
+  | (τ^a φ_a) acting on ψ̄, `"si,aij,a->sj"` | j reaches a → `a` and i → flavor | needs `out_axes` |
+- **Result axis order.** The output labels in the order written, then the passed-through axes
+  in order of first appearance. (For `dot` and `vdot` this matches `*`: the left operand's
+  axes, then the right operand's extras.)
 - **Boundary conditions.** The product rule across all field operands. Raw arrays are
   neutral.
 
@@ -72,7 +94,7 @@ Examples:
 ```python
 lat.einsum("a,a->", phi, chi)                         # φ·χ, a per-site scalar
 lat.einsum("ij,j->i", gamma5, psi, axes="spin")       # color passes through
-lat.einsum("ij,j->i", R, phi, axes="a")               # O(N) rotation
+lat.einsum("ij,j->i", R, phi)                         # O(N) rotation: one axis, no axes= needed
 lat.einsum("abc,a,b,c->", eps, phi, dx, dy)           # O(3) topological charge density
 lat.einsum("si,aij,sj,a->", psibar, tau, psi, phi,    # Yukawa: ψ̄ τ^a ψ φ_a
            axes=("spin", "flavor", "a"))
