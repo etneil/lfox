@@ -12,6 +12,14 @@ function, fermionic or not:
     linear A, by transposition and conjugation.  It does not rely on
     gamma5-hermiticity, which fails, for example, for a pseudoscalar Yukawa
     coupling i g5 pi.  Its output is a field like `like`.
+  * **`cg(A, b, x0=None, tol=1e-10, maxiter=1000)`** solves A x = b for
+    Hermitian positive-definite A (M^dagger M) by conjugate gradient, and
+    returns `(x, info)`: x is a field like b, and `info` holds `iterations`,
+    `residual` (|b - A x| / |b|) and `converged` (residual <= tol).  It stops
+    at `maxiter` without raising -- non-convergence is reported, not hidden.
+    It is jittable, and differentiable by implicit differentiation, never
+    through the iterations: for complex Hermitian A the transposed system is
+    conj(A), not A, and getting that wrong gives a silently wrong gradient.
 """
 
 import jax
@@ -132,3 +140,133 @@ def test_dagger_is_jittable(linalg):
     a = _spinor(7)
     Ddag = linalg.dagger(D, a)
     assert jnp.allclose(jax.jit(Ddag)(a).F, Ddag(a).F)
+
+
+# --- cg -----------------------------------------------------------------------
+
+
+def _mdagm(sigma, kappa=0.15):
+    # M^dagger M for M = Wilson + a scalar Yukawa coupling: complex Hermitian PD.
+    from lfox.linalg import dagger
+
+    def M(psi):
+        return fermions.wilson(psi, kappa) + sigma * psi
+
+    Mdag = dagger(M, _spinor(0))
+    return lambda psi: Mdag(M(psi))
+
+
+def _sigma(key=11, scale=0.3):
+    return lat.LatticeField(lattice=L2, F=scale * jax.random.normal(jax.random.PRNGKey(key), (4, 3)))
+
+
+def _relative_residual(A, x, b):
+    return float(jnp.linalg.norm((b - A(x)).F) / jnp.linalg.norm(b.F))
+
+
+def test_cg_solves_a_hermitian_positive_definite_system(linalg):
+    A, b = _mdagm(_sigma()), _spinor(12)
+    x, info = linalg.cg(A, b, tol=1e-10)
+
+    assert isinstance(x, lat.LatticeField)
+    assert x.axes == b.axes
+    assert x.bc == b.bc
+    assert _relative_residual(A, x, b) < 1e-9
+    exact = np.linalg.solve(np.asarray(linalg.dense(A, b)), np.asarray(b.F).ravel())
+    assert np.allclose(np.asarray(x.F).ravel(), exact)
+
+
+def test_cg_reports_its_diagnostics(linalg):
+    A, b = _mdagm(_sigma()), _spinor(13)
+    x, info = linalg.cg(A, b, tol=1e-10)
+
+    assert set(info) == {"iterations", "residual", "converged"}
+    assert 0 < int(info["iterations"]) < 1000
+    assert bool(info["converged"])
+    assert float(info["residual"]) <= 1e-10
+    # The reported residual is the real one, up to rounding in the recursion.
+    assert _relative_residual(A, x, b) < 10 * 1e-10
+
+
+def test_cg_iteration_count_is_exact_on_three_eigenvalues(linalg):
+    # In exact arithmetic CG converges in as many iterations as A has distinct
+    # eigenvalues: a site-dependent scaling by 1, 2 or 3 takes exactly three.
+    d = lat.LatticeField(lattice=L2, F=1.0 + jnp.arange(12).reshape(4, 3) % 3)
+    _, info = linalg.cg(lambda psi: d * psi, _spinor(14), tol=1e-10)
+    assert int(info["iterations"]) == 3
+    assert bool(info["converged"])
+
+
+def test_cg_stops_at_maxiter_and_says_so(linalg):
+    d = lat.LatticeField(lattice=L2, F=1.0 + jnp.arange(12).reshape(4, 3) % 3)
+    _, info = linalg.cg(lambda psi: d * psi, _spinor(15), tol=1e-10, maxiter=2)
+    assert int(info["iterations"]) == 2
+    assert not bool(info["converged"])
+    assert float(info["residual"]) > 1e-10
+
+
+def test_cg_starts_from_x0(linalg):
+    A, b = _mdagm(_sigma()), _spinor(16)
+    x, _ = linalg.cg(A, b, tol=1e-12)
+
+    again, info = linalg.cg(A, b, x0=x, tol=1e-10)
+    assert int(info["iterations"]) == 0  # already converged
+    assert jnp.allclose(again.F, x.F)
+
+    # A nearby guess (a random perturbation: a multiple of x would leave the
+    # initial residual along b, the same Krylov space as starting from zero)
+    # is much closer after the same few iterations.
+    near = x + 1e-4 * _spinor(21)
+    _, from_near = linalg.cg(A, b, x0=near, tol=1e-14, maxiter=3)
+    _, from_zero = linalg.cg(A, b, tol=1e-14, maxiter=3)
+    assert float(from_near["residual"]) < 1e-2 * float(from_zero["residual"])
+
+
+def test_cg_of_zero_is_zero(linalg):
+    b = _spinor(17).copy_new_F(jnp.zeros((4, 3, 2), dtype=complex))
+    x, info = linalg.cg(_mdagm(_sigma()), b)
+    assert jnp.all(x.F == 0)
+    assert int(info["iterations"]) == 0
+    assert bool(info["converged"])
+
+
+def test_cg_is_jittable(linalg):
+    b = _spinor(18)
+
+    @jax.jit
+    def solve(sigma):
+        return linalg.cg(_mdagm(sigma), b, tol=1e-10)
+
+    x, info = solve(_sigma())
+    assert bool(info["converged"])
+    assert _relative_residual(_mdagm(_sigma()), x, b) < 1e-9
+
+
+@pytest.mark.parametrize("field", ["complex", "real"])
+def test_cg_gradient_matches_finite_differences(linalg, field):
+    # d/dsigma of b^dagger A(sigma)^-1 b.  jax.grad cannot differentiate a
+    # while_loop, so this passing means cg differentiates implicitly.  The
+    # complex case is the one a symmetric=True declaration gets silently
+    # wrong (A^T = conj(A) for complex Hermitian A).
+    if field == "complex":
+        b = _spinor(19)
+
+        def A(sigma):
+            return _mdagm(sigma)
+    else:
+        b = lat.LatticeField(lattice=L2, F=jax.random.normal(jax.random.PRNGKey(19), (4, 3)))
+
+        def A(sigma):  # a real, symmetric positive-definite operator
+            return lambda f: (2.0 + sigma * sigma) * f - 0.2 * (f.nn_field(0, 1) + f.nn_field(0, -1))
+
+    def S(sigma):
+        x, _ = linalg.cg(A(sigma), b, tol=1e-13)
+        return jnp.vdot(b.F, x.F).real
+
+    sigma = _sigma()
+    grad = jax.jit(jax.grad(S))(sigma)
+    direction = jax.random.normal(jax.random.PRNGKey(20), (4, 3))
+    h = 1e-5
+    fd = (S(sigma.copy_new_F(sigma.F + h * direction))
+          - S(sigma.copy_new_F(sigma.F - h * direction))) / (2 * h)
+    assert float(jnp.sum(grad.F * direction)) == pytest.approx(float(fd), rel=1e-6)
