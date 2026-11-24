@@ -143,22 +143,6 @@ def test_hmc_detailed_balance():
 
 import pytest  # noqa: E402
 
-from lfox.action import Term  # noqa: E402
-
-
-class ONPhi4(Term):
-    # An O(N) phi^4 action written with dot: one number per site for any N.
-    kappa: float
-    lamb: float
-
-    def density(self, phi):
-        phi2 = phi.dot(phi)
-        S = phi2 + self.lamb * (phi2 - 1) ** 2
-        for ax in range(phi.d()):
-            S -= 2 * self.kappa * phi.dot(phi.nn_field(ax))
-        return S
-
-
 L2 = lat.SquareLattice(st_dims=(4, 4))
 BCS = [(1, 1), (-1, 1), (0, 1)]  # periodic, antiperiodic, Dirichlet in x
 
@@ -170,7 +154,7 @@ def _on_field(key, bc=(1, 1), N=3):
 
 def _on_hmc(eps=0.1, Nstep=10):
     return HMC(
-        action=ONPhi4(kappa=0.1, lamb=0.5),
+        action=ScalarTerm(kappa=0.1, lamb=0.5),  # O(N) for a field with axes
         integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
     )
 

@@ -1,6 +1,6 @@
 ## Architecture
 
-These are running architecture notes and may be supplanted as progress is made.  For now they are kept here for reference.  Last revised 2026-11-22, on branch `field-shape`.
+These are running architecture notes and may be supplanted as progress is made.  For now they are kept here for reference.  Last revised 2026-11-23, on branch `indices`.  Design decisions for internal axes (including deferred matrix-valued fields) are in `axes_design.md`.
 
 Package layout: `lattice.py` and `action.py` are the core; `evolution/` holds Markov-chain algorithms and the `Chain` driver; `stats.py` holds Monte Carlo statistics; `scalar/` holds theory-specific observables; `fermions/` is stranded (see below).
 
@@ -13,6 +13,10 @@ Package layout: `lattice.py` and `action.py` are the core; `evolution/` holds Ma
   - **Arithmetic** (`_field_op`): fields must share a lattice; internal axes align by *name* -- an axis on one side only broadcasts, disjoint axes give an outer product (left operand's axes first), one name with two sizes is an error.  A raw array must be a scalar or exactly `.F.shape`.
   - **Boundary conditions.** Each entry is a `Phase` -- `lat.phase(n, d)` = exp(i pi n/d), stored as an exact `Fraction` of pi mod 2 so equal BCs hash and compare equal (pytree structure must match exactly through `lax.cond`/`scan`) -- or `lat.DIRICHLET` (spelled 0: no site past the edge).  Spellings 1/-1/0 are normalized at construction; anything else raises.  Under arithmetic the product rule applies (`*`, `/`, integer `**`, `conj` act on phases; Dirichlet absorbs); `+`/`-` need equal BCs; a raw scalar is a periodic constant (adds only to periodic/Dirichlet axes), a raw array is trusted; a non-integer power needs a periodic or Dirichlet field (branch cut).
 - `nn_field(axis, shift=1, twist=None)` is the primary kinematic primitive.  Site x gets the value from x - shift; values that wrapped pick up the boundary factor, applied only to the wrapped slab (`shift = qL + r`: bc^-(q+1) on the first r slices, bc^-q on the rest).  `twist` (radians) is an extra traced boundary phase exp(i twist): differentiable, no recompile; not allowed on a Dirichlet axis.  The hot path is `_nn_field`, a JIT-compiled staticmethod with lattice/axis/shift/bc static.
+- **Internal-axis operations** (spec: `tests/test_axis_ops.py` docstring; rationale: `axes_design.md`).  None of them ever sums over sites.
+  - `lat.einsum(pattern, *operands, axes=None, out_axes=None)`: numpy's einsum per site, with spacetime as the implicit `...`.  Labels are local; a field's labels bind to the axes listed in `axes=` that it has, in that order, and unlisted axes pass through by name.  `axes=None` only for fields with at most one axis.  A label binding two different axis names is an error.  A constant-only output label is named by tracing its constants to field-bound labels (`_reached`), and must reach exactly one name of its size; otherwise `out_axes` names it.  BCs: product rule over field operands.
+  - `phi.contract(*names)`, `phi.dot(chi, *names)`, `phi.vdot(chi, *names)` (conjugates `phi`, as `np.vdot`) are thin wrappers over `einsum`.  Default: all (shared) axes, so a term written with `dot` works for any N and any axis name.
+  - Repeated axis names (matrix-valued fields) are still an error at construction; their design is recorded but deferred.
 - `d()` is the number of spacetime dimensions; `dims()` includes internal axes.
 - `LatticeField` is immutable (Equinox); to produce a modified copy, use `copy_new_F(new_F, bc=None)` (`dataclasses.replace`, so shape checks rerun).
 
@@ -27,6 +31,7 @@ The module docstring and the docstring of `tests/test_action.py` are the authori
 - **Sampled vs evolved fields.**  A term may declare `sampled = ('eta',)` and a `draw(key, ...)` hook giving an exact conditional heatbath (pseudofermions).  `Action.sampled_fields` / `evolved_fields` follow; `dS` defaults to the evolved fields.  `sample` gives each drawing term its own key.
 - Composition guards: two terms with the same `name` (label, default class name) on the same fields raise `DuplicateTermError`; distinct `label`s declare a deliberate duplicate.  `S[label]` looks up a term.
 - Consumers accept a lone term via `eqx.field(converter=Action)`, so downstream code only ever sees an `Action`.
+- **A density is one number per site**: a density that still has internal axes raises (`_per_site`, pointing to `dot`/`contract`), as does a `total` that is not a scalar (`_scalar_total`).  Otherwise `phi**4` on an O(N) field would silently be N decoupled quartic fields.
 
 ### Evolution (`src/lfox/evolution/`)
 
@@ -38,7 +43,7 @@ Import from the subpackage (`from lfox.evolution import HMC, Chain, LeapfrogInte
   - Steps in blocks of the GCD of `save_freq` and the measurement frequencies, so it never steps over a trajectory at which something must be recorded; `run(ntraj)` requires `ntraj` to be a multiple of that block.
   - Reading results: `column(name)` (float64 array, leading axis = MC time), `column_traj(name)`, and `columns(*names)` which aligns several on their shared trajectories (what a multi-column jackknife needs).  `acceptance()` and `monitor` hold diagnostics.
   - `warmup(n)` uses `evolver.as_warmup()`, records diagnostics only, and advances `warmup_traj`; `traj` counts production trajectories only.
-- `hmc.py` — `HMC(Evolver)`. `warmup` is a **static field**, not a call argument ("always accept" is a different transition kernel); build the variant with `as_warmup()`.  Each trajectory first heatbaths the action's sampled fields (if any), then refreshes momenta for the evolved fields only, then integrates and accepts/rejects.  The accept/reject uniform must be drawn from an RNG key advanced past *every* momentum draw, or it is a deterministic function of the momenta it is testing; `tests/test_scalar_hmc.py` pins this, and `integration/pseudofermion_marginal.py` checks the heatbath/MD composition against an exact marginal.
+- `hmc.py` — `HMC(Evolver)`. `warmup` is a **static field**, not a call argument ("always accept" is a different transition kernel); build the variant with `as_warmup()`.  Each trajectory first heatbaths the action's sampled fields (if any), then refreshes momenta for the evolved fields only, then integrates and accepts/rejects.  Momenta are `LatticeField`s made by `copy_new_F` (same lattice, axes and BCs as the field they move, so X + εP is defined), and the kinetic density is `0.5 * p.vdot(p)`.  The accept/reject uniform must be drawn from an RNG key advanced past *every* momentum draw, or it is a deterministic function of the momenta it is testing; `tests/test_scalar_hmc.py` pins this, and `integration/pseudofermion_marginal.py` checks the heatbath/MD composition against an exact marginal.
 - `integrators.py` — `LeapfrogIntegrator`, `OmelyanIntegrator` are `MDIntegrator` subclasses with `eps`, `Nstep` and a JIT-compiled `_integrate(delta_X, delta_P, X, P)` (behind a thin `integrate` wrapper kept for profiling).  `X`/`P` are dicts of fields.  `delta_X`/`delta_P` are closures supplied by the evolver — they are passed as static args (`static_argnums=(1,2)`), so re-creating them per call outside an enclosing jit will trigger recompilation.
 - Algorithm-specific requirements belong on the `Action`, not on `Evolver`. HMC needs `dS` (free, via autodiff, for any action); exact heatbaths come from `Term.draw`; a cluster update would need bond weights. Keep the `Evolver` interface thin.
 
@@ -51,10 +56,10 @@ Host-side NumPy at float64 on *columns* (leading axis = MC time, as from `Chain.
 
 ### Scalar observables (`src/lfox/scalar/`)
 
-- Two kinds, deliberately separate.  **Per-configuration** observables take a `LatticeField` and are jittable — what a `Chain` measurement function returns: `magnetization` (m = M/V), `nn_product`, `structure_factor(phi, n)` (G(p), not connected), `correlator(phi, axis)` (zero-momentum C(t), not connected).  **Ensemble** estimators take columns and are nonlinear in averages, so their errors come from `jackknife`: `susceptibility(m, volume)`, `binder`, `xi_2nd(m, Gp, volume, L)`, `effective_mass(C)`.
-- Broken-phase χ is `susceptibility(np.abs(m), volume)`.
+- Two kinds, deliberately separate.  **Per-configuration** observables take a `LatticeField` and are jittable — what a `Chain` measurement function returns: `magnetization` (m = M/V; m_a for O(N)), `nn_product`, `structure_factor(phi, n)` (G(p), not connected), `correlator(phi, axis)` (zero-momentum C(t), not connected).  **Ensemble** estimators take columns and are nonlinear in averages, so their errors come from `jackknife`: `susceptibility(m, volume)`, `binder`, `xi_2nd(m, Gp, volume, L)`, `effective_mass(C)`.
+- Broken-phase χ is `susceptibility(np.abs(m), volume)`; for O(N), `np.linalg.norm(m, axis=-1)`.
 - Ensemble estimators return a quiet `nan` where the quantity does not exist (`xi_2nd` outside χ ≥ ⟨G(p_min)⟩ > 0; `effective_mass` at t = 0 and where noise pushes the cosh ratio below 1), rather than `inf` or a warning per jackknife deletion.
-- O(N) models are a near-term target; whether they extend this module (N = 1 as the ordinary scalar) or get their own subpackage is undecided.
+- **O(N) extends this module**; the plain scalar is N = 1.  Internal axes trail in `magnetization`; G(p), C(t) and `nn_product` sum over components; estimators contract the trailing axes of their columns, so χ = V(⟨m·m⟩ − ⟨m⟩·⟨m⟩) (summed over components, no 1/N) and Binder U = 1 − N/(N+2)·⟨(m·m)²⟩/⟨m·m⟩² (N from the column shape).  V is always `lattice.volume`, never `F.size`.  The nonlinear sigma model waits for the manifold field-type protocol.
 
 ### Fermions (`src/lfox/fermions/`)
 
@@ -65,8 +70,8 @@ Host-side NumPy at float64 on *columns* (leading axis = MC time, as from `Chain.
 
 ### Tests and integration
 
-- `tests/phi4.py` — `ScalarTerm`, the reference φ⁴ term, with an analytic gradient for checking autodiff.  `tests/conftest.py` provides fixtures (`scalar_action`, `lat4`, `phi4`).
-- `tests/free_field.py` — exact, independent samples of the free (λ = 0) field via FFT, plus closed-form χ, ξ₂, C(t) and pole mass: the reference values the observables are tested against.
+- `tests/phi4.py` — `ScalarTerm`, the reference O(N) φ⁴ term (written with `dot`; a field with no axes is N = 1), with an analytic gradient for checking autodiff.  `tests/test_on_model.py` pins it as the O(N) model: N = 1 reduction, rotation invariance, force, ⟨e^{−ΔH}⟩ = 1, and free-field equipartition and χ under HMC.  `tests/conftest.py` provides fixtures (`scalar_action`, `lat4`, `phi4`).
+- `tests/free_field.py` — exact, independent samples of the free (λ = 0) field via FFT (`sample_on` for N independent fields), plus closed-form χ, ξ₂, C(t) and pole mass: the reference values the observables are tested against.
 - `integration/reproduce_schaefer.py` — reproduction of Schaefer's φ⁴ exercises; `integration/pseudofermion_marginal.py` — heatbath + HMC composition against an exact marginal.  Both are jupytext-paired notebooks.
 
 ## Conventions / things to know
