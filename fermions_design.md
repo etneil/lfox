@@ -82,6 +82,23 @@ diagnostics flow out through one channel:
   `monitor["Pseudofermion.iterations"]` with shape `(n_solves,)` per trajectory and
   `(traj, n_solves)` from `evolve_many`. Stacking means no reduction rule (sum, max) is
   baked in.
+- **Names:** info is keyed by term name, so two reporting terms with one name (on different
+  fields) are an error asking for labels. `replicate` suffixes the labels of the copies it
+  makes (`Pseudofermion_0`, `Pseudofermion_1`, ...), but only of terms on a replicated field;
+  a term on none of them is still a refused duplicate.
+- **Hand-written gradients:** a term with a `gradient` hook is never differentiated, so its
+  `dS` info comes from `gradient`, which may return `(grads, info)` by the same convention.
+- **delta_H from totals:** H = S + Σ ½p·p, so actions with total-only terms run. Differencing
+  two O(V) totals loses ~1e-7·V in float32 (per-site differencing kept it near √V·1e-7). This
+  is standard practice: production codes evaluate the Metropolis H in double precision even
+  when the MD runs lower, and an accurate pseudofermion S needs a double-precision solve
+  anyway. Future work: a precision setting for the Metropolis evaluations (upcast to float64
+  for the two H evaluations, float32 MD), and mixed-precision solves (iterative refinement:
+  double-precision residual, low-precision inner `cg`) as a wrapper around `cg`. Nothing in
+  the plumbing assumes one precision.
+- **Integrators:** `Nstep` is static (the monitor's shape depends on it). Each step is a
+  self-contained scan body (drift-kick-drift for leapfrog), so trajectories agree with the
+  old `fori_loop` form only to rounding.
 - **Non-convergence:** recorded, never forced into a rejection (that would hide a solver
   problem behind a lower acceptance). `Chain` warns, host-side, when any monitor entry
   `"<term>.converged"` in a block is false.

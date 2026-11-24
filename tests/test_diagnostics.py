@@ -7,7 +7,10 @@ before the implementation.  The design is in `fermions_design.md`
     return a plain value are unchanged.
   * **`Action.S(fields, info=True)`** returns `(S, {term name: info})`, and
     **`Action.dS(fields, info=True)`** returns `(gradients, {term name: info})`.
-    Terms without info do not appear.  The defaults are unchanged.
+    Terms without info do not appear.  The defaults are unchanged.  Two
+    reporting terms with one name must be labelled apart; `replicate` does
+    this itself, suffixing the labels of its copies.  A hand-written
+    `gradient` may return `(grads, info)` in the same way.
   * **HMC computes delta_H from totals**, H = S + sum 1/2 p.p, so it runs
     actions with nonlocal (total-only) terms -- which a pseudofermion term is.
   * **The HMC monitor** gets every solve of a trajectory, in order, under flat
@@ -147,6 +150,50 @@ def test_info_must_be_a_dict():
         Action(BadInfo()).S({"phi": _phi()})
 
 
+def test_replicated_terms_report_under_their_own_names():
+    S = Probe(m2=1.0).replicate(2, "phi")
+    fields = {"phi_0": _phi(0), "phi_1": _phi(1)}
+    _, info = S.S(fields, info=True)
+
+    assert set(info) == {"Probe_0", "Probe_1"}
+    assert float(info["Probe_1"]["norm2"]) == pytest.approx(float(jnp.sum(_phi(1).F ** 2)))
+
+
+def test_reporting_terms_sharing_a_name_need_labels():
+    # Legal as an action (they are on different fields), but their info
+    # would collide.
+    S = Probe(m2=1.0) + Probe(m2=2.0).rebind(phi="chi")
+    with pytest.raises(ValueError, match="label"):
+        S.S({"phi": _phi(0), "chi": _phi(1)}, info=True)
+
+
+class HandForce(Term):
+    """Probe with its gradient written by hand, which reports as well."""
+
+    m2: float
+
+    def total(self, phi):
+        s = jnp.sum(phi.F**2)
+        return 0.5 * self.m2 * s, {"norm2": s}
+
+    def gradient(self, phi):
+        return {"phi": self.m2 * phi}, {"norm2": jnp.sum(phi.F**2)}
+
+
+def test_a_hand_written_gradient_may_report_info():
+    # A term with a gradient is never differentiated, so its info in dS comes
+    # from the gradient hook, by the same (value, info) convention.
+    phi = _phi(14)
+    grads, info = Action(HandForce(m2=2.0)).dS({"phi": phi}, info=True)
+
+    assert jnp.allclose(grads["phi"].F, 2.0 * phi.F)
+    assert float(info["HandForce"]["norm2"]) == pytest.approx(float(jnp.sum(phi.F**2)))
+
+    hmc = HMC(action=HandForce(m2=1.0), integrator=LeapfrogIntegrator(eps=0.1, Nstep=3))
+    _, monitor, _ = hmc.evolve({"phi": phi}, jax.random.PRNGKey(15))
+    assert monitor["HandForce.norm2"].shape == (5,)
+
+
 # --- HMC ----------------------------------------------------------------------
 
 
@@ -192,6 +239,20 @@ def test_hmc_runs_an_action_with_a_nonlocal_term():
     fields, monitor, _ = hmc.evolve_many({"phi": _phi(8)}, jax.random.PRNGKey(9), traj=5)
     assert jnp.all(jnp.isfinite(fields["phi"].F))
     assert np.all(np.isfinite(np.asarray(monitor["delta_H"])))
+
+
+@pytest.mark.parametrize("Integrator", [LeapfrogIntegrator, OmelyanIntegrator])
+def test_Nstep_is_static_and_takes_any_integer(Integrator):
+    # Static, since the monitor's shape depends on it.  A numpy integer (from
+    # looping over np.array([...])) is converted, not stored as an array;
+    # a non-integer is refused rather than truncated.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        integrator = Integrator(eps=0.1, Nstep=np.int64(5))
+    assert type(integrator.Nstep) is int
+
+    with pytest.raises(TypeError):
+        Integrator(eps=0.1, Nstep=2.5)
 
 
 def test_reporting_info_does_not_change_the_trajectory():

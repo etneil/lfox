@@ -1,13 +1,23 @@
+import operator
 from abc import abstractmethod
 from functools import partial
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 
 
 class MDIntegrator(eqx.Module):
+    # Integrates Hamilton's equations, given delta_X(X, P) -> dX and
+    # delta_P(X, P) -> (dP, info).  `integrate` returns (X, P, info), with the
+    # info of every force evaluation stacked in order along a leading axis.
+    #
+    # Nstep is static: the number of force evaluations fixes the shape of the
+    # stacked info, so changing it recompiles.  Any integer is accepted (a
+    # numpy one is converted, as a static array would be a mistake); a
+    # non-integer is refused rather than truncated.
     eps: float
-    Nstep: int
+    Nstep: int = eqx.field(static=True, converter=operator.index)
 
     def traj_length(self):
         return self.eps * self.Nstep
@@ -37,21 +47,20 @@ class LeapfrogIntegrator(MDIntegrator):
         # Note that X and P should both be dictionaries
         # of fields (like in Action()) with matching keys.
 
-        X = self.update(X, delta_X(X, P), self.eps / 2.0)
-        P = self.update(P, delta_P(X, P), self.eps)
+        # Nstep drift-kick-drift steps, one force evaluation each.  The
+        # half-drifts of neighboring steps add up to the usual leapfrog.
+        def step(XP, _):
+            X, P = XP
+            X = self.update(X, delta_X(X, P), self.eps / 2.0)
+            dP, info = delta_P(X, P)
+            P = self.update(P, dP, self.eps)
+            X = self.update(X, delta_X(X, P), self.eps / 2.0)
 
-        def mid_step(i, XP):
-            Xint, Pint = XP
-            Xint = self.update(Xint, delta_X(Xint, Pint), self.eps)
-            Pint = self.update(Pint, delta_P(Xint, Pint), self.eps)
+            return (X, P), info
 
-            return (Xint, Pint)
+        (X, P), info = jax.lax.scan(step, (X, P), length=self.Nstep)
 
-        X, P = jax.lax.fori_loop(0, self.Nstep - 1, mid_step, (X, P))
-
-        X = self.update(X, delta_X(X, P), self.eps / 2.0)
-
-        return X, P
+        return X, P, info
 
 
 class OmelyanIntegrator(MDIntegrator):
@@ -69,23 +78,21 @@ class OmelyanIntegrator(MDIntegrator):
         xiEps = self.xi * self.eps
         middle_step = (1 - 2 * self.xi) * self.eps
 
-        def mid_step(i, XP):
-            Xint, Pint = XP
+        # Nstep steps of drift-kick-drift-kick-drift, two force evaluations each.
+        def step(XP, _):
+            X, P = XP
+            X = self.update(X, delta_X(X, P), xiEps)
+            dP, info_a = delta_P(X, P)
+            P = self.update(P, dP, self.eps / 2.0)
+            X = self.update(X, delta_X(X, P), middle_step)
+            dP, info_b = delta_P(X, P)
+            P = self.update(P, dP, self.eps / 2.0)
+            X = self.update(X, delta_X(X, P), xiEps)
 
-            Xint = self.update(Xint, delta_X(Xint, Pint), 2 * xiEps)
-            Pint = self.update(Pint, delta_P(Xint, Pint), self.eps / 2.0)
-            Xint = self.update(Xint, delta_X(Xint, Pint), middle_step)
-            Pint = self.update(Pint, delta_P(Xint, Pint), self.eps / 2.0)
+            return (X, P), jax.tree.map(lambda a, b: jnp.stack([a, b]), info_a, info_b)
 
-            return (Xint, Pint)
+        (X, P), info = jax.lax.scan(step, (X, P), length=self.Nstep)
+        # (Nstep, 2, ...) -> (2 Nstep, ...), in evaluation order.
+        info = jax.tree.map(lambda a: a.reshape(-1, *a.shape[2:]), info)
 
-        X = self.update(X, delta_X(X, P), xiEps)
-        P = self.update(P, delta_P(X, P), self.eps / 2.0)
-        X = self.update(X, delta_X(X, P), middle_step)
-        P = self.update(P, delta_P(X, P), self.eps / 2.0)
-
-        X, P = jax.lax.fori_loop(0, self.Nstep - 1, mid_step, (X, P))
-
-        X = self.update(X, delta_X(X, P), xiEps)
-
-        return X, P
+        return X, P, info

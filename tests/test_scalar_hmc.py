@@ -189,7 +189,9 @@ def test_kinetic_energy_contracts_the_internal_axes():
     assert H.axes == ()
     kinetic = 0.5 * jnp.sum(pi["phi"].F ** 2, axis=-1)
     assert jnp.allclose(H.F, S_field.F + kinetic)
-    assert jnp.isclose(hmc.H(S_field, pi), jnp.sum(S_field.F + kinetic))
+    # H itself takes the total action: nonlocal actions have no density.
+    S = hmc.action.S({"phi": phi})
+    assert jnp.isclose(hmc.H(S, pi), jnp.sum(S_field.F + kinetic))
 
 
 @pytest.mark.parametrize("bc", BCS, ids=str)

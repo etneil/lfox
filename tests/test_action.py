@@ -593,6 +593,26 @@ def test_action_replicate_copies_a_multi_term_block(phi, chi):
     assert float(S(fields)) == pytest.approx(2 * float(one))
 
 
+def test_replicate_suffixes_the_labels_of_the_copies():
+    # Each copy is addressable by name -- which is also the key its solver
+    # info is reported under.
+    S = StochasticMass(g=0.5).replicate(2, "eta")
+    assert [t.name for t in S.terms] == ["StochasticMass_0", "StochasticMass_1"]
+    assert S["StochasticMass_1"].field_names == ("phi", "eta_1")
+
+    block = StochasticMass(g=0.5) + Mass(m2=1.0, label="eta_mass").rebind(phi="eta")
+    names = [t.name for t in block.replicate(2, "eta").terms]
+    assert names == ["StochasticMass_0", "eta_mass_0", "StochasticMass_1", "eta_mass_1"]
+
+
+def test_replicate_still_refuses_to_copy_a_term_off_the_replicated_fields():
+    # Mass is on phi alone, so its copies are the same term twice: only terms
+    # whose fields are renamed get a suffix.
+    block = StochasticMass(g=0.5) + Mass(m2=1.0)
+    with pytest.raises(DuplicateTermError):
+        block.replicate(2, "eta")
+
+
 # --- couplings ----------------------------------------------------------------
 
 

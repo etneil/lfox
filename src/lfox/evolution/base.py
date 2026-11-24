@@ -1,4 +1,5 @@
 import math
+import warnings
 from abc import abstractmethod
 from functools import partial, reduce
 
@@ -168,6 +169,22 @@ class Chain:
     def _record_monitor(self, monitor):
         for key, vals in monitor.items():
             self.monitor.setdefault(key, []).extend(np.asarray(vals).tolist())
+
+        # A solve that did not converge is recorded, never turned into a
+        # rejection (which would hide it behind a lower acceptance), but it
+        # must not pass silently either.
+        failed = [
+            key.removesuffix(".converged")
+            for key, vals in monitor.items()
+            if key.endswith(".converged") and not np.all(vals)
+        ]
+        if failed:
+            warnings.warn(
+                f"solves of {failed} did not converge in this block; see the "
+                "'<term>.converged' entries of chain.monitor.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
     def _record_step(self):
         if self.traj % self.save_freq == 0:

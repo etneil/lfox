@@ -42,6 +42,11 @@ retrace when it changes -- and note that a traced coupling cannot be used in an
 conditional distribution and must not be given a momentum.  `draw` / `sample`
 are an opt-in capability -- a term that can supply an exact heatbath for one of
 its own fields says so; HMC-family algorithms use it, others ignore it.
+
+A term whose `total` (or `gradient`) runs a solver may return `(value, info)`,
+with `info` a dict of diagnostics -- `cg` returns one.  `S(fields, info=True)`
+and `dS(fields, info=True)` hand them back as `{term name: info}`, and HMC
+stacks them into its monitor.  Terms returning a plain value report nothing.
 """
 
 import dataclasses
@@ -177,8 +182,9 @@ class Term(eqx.Module):
         )
 
     def total(self, **fields):
-        # Total action, as a scalar.  The default sums the density, which is
-        # what a local term wants; a nonlocal term overrides this instead.
+        # Total action, as a scalar, or `(scalar, info)` with `info` a dict of
+        # solver diagnostics.  The default sums the density, which is what a
+        # local term wants; a nonlocal term overrides this instead.
         return jnp.sum(_per_site(self, self.density(**fields)).F)
 
     def draw(self, key, **fields):
@@ -188,8 +194,9 @@ class Term(eqx.Module):
 
     def gradient(self, **fields):
         # dS/dfield for this term, written by hand instead of differentiated.
-        # Returns {role: LatticeField}, with the same sign convention as dS,
-        # and must cover every field it is asked to differentiate.
+        # Returns {role: LatticeField}, or `(that, info)` like `total`, with
+        # the same sign convention as dS, and must cover every field it is
+        # asked to differentiate.
         raise NotImplementedError
 
     # --- structure ------------------------------------------------------------
@@ -258,15 +265,17 @@ class Term(eqx.Module):
 
     def replicate(self, n, *roles):
         # The many-flavor loop, written once: n copies of this term with the
-        # named roles suffixed _0 .. _(n-1).  Everything else stays shared.
-        stem = self._bind()
-
-        return Action(
-            *(
-                self.rebind(**{r: f"{stem.get(r, r)}_{i}" for r in roles})
-                for i in range(n)
+        # named roles, and the label, suffixed _0 .. _(n-1).  Everything else
+        # stays shared.
+        bound = self._bind()
+        unknown = [r for r in roles if r not in bound]
+        if unknown:
+            raise ValueError(
+                f"{type(self).__name__} has no role(s) {unknown}; its roles are "
+                f"{list(self._roles)}."
             )
-        )
+
+        return Action(self).replicate(n, *(bound[r] for r in roles))
 
     def __add__(self, other):
         if not isinstance(other, (Term, Action)):
@@ -422,9 +431,17 @@ class Action(eqx.Module):
     def replicate(self, n, *names):
         # The many-flavor loop over a whole block of terms: n copies with the
         # named fields suffixed _0 .. _(n-1).  Everything else stays shared.
-        return Action(
-            *(self.rebind(**{f: f"{f}_{i}" for f in names}) for i in range(n))
-        )
+        # So does the label of each term on a renamed field, which keeps the
+        # copies addressable (and their solver info apart).  A term on none of
+        # them is copied unchanged, so is a duplicate, and refused.
+        def copy(i):
+            renamed = self.rebind(**{f: f"{f}_{i}" for f in names})
+            for old, new in zip(self.terms, renamed.terms):
+                if set(old.field_names) & set(names):
+                    new = dataclasses.replace(new, label=f"{old.name}_{i}")
+                yield new
+
+        return Action(*(t for i in range(n) for t in copy(i)))
 
     def __add__(self, other):
         if not isinstance(other, (Term, Action)):
@@ -450,24 +467,25 @@ class Action(eqx.Module):
 
         return density
 
-    @jax.jit
-    def S(self, fields):
-        total = 0.0
-        for term in self.terms:
-            total = total + _scalar_total(term, fields)
+    @partial(jax.jit, static_argnames="info")
+    def S(self, fields, info=False):
+        # The total action; with `info`, `(S, {term name: info})`.
+        total, infos = _totals(self.terms, fields)
 
-        return total
+        return (total, infos) if info else total
 
     def __call__(self, fields):
         # S(fields), as the physics is written: the action on a configuration.
         return self.S(fields)
 
-    def dS(self, fields, wrt=None):
-        # dS/dfield (the gradient, not the force), keyed by external name.
-        # Defaults to the evolved fields: a sampled field is drawn, not moved.
+    def dS(self, fields, wrt=None, info=False):
+        # dS/dfield (the gradient, not the force), keyed by external name;
+        # with `info`, `(gradients, {term name: info})`.  Defaults to the
+        # evolved fields: a sampled field is drawn, not moved.
         wrt = self.evolved_fields if wrt is None else tuple(wrt)
+        grad, infos = _grad(self, fields, wrt)
 
-        return _grad(self, fields, wrt)
+        return (grad, infos) if info else grad
 
     @jax.jit
     def sample(self, fields, key):
@@ -507,14 +525,47 @@ def _per_site(term, density):
     return density
 
 
-def _scalar_total(term, fields):
-    total = term.total(**term._args("total", fields))
-    if jnp.ndim(total) != 0:
+def _split(term, hook, out):
+    # A hook returns a value, or `(value, info)`: always (value, info-or-None).
+    if not isinstance(out, tuple):
+        return out, None
+
+    value, info = out
+    if not isinstance(info, dict):
         raise ValueError(
-            f"{term.name}.total returns shape {jnp.shape(total)}; an action total "
-            "must be a scalar."
+            f"{term.name}.{hook} returns info of type {type(info).__name__}; "
+            "info must be a dict."
         )
-    return total
+    return value, info
+
+
+def _report(infos, term, info):
+    # Collect one term's info under its name, which must be unique among the
+    # terms that report.
+    if info is None:
+        return
+    if term.name in infos:
+        raise ValueError(
+            f"more than one term named {term.name!r} reports solver info; give "
+            "them distinct labels (replicate does this itself)."
+        )
+    infos[term.name] = info
+
+
+def _totals(terms, fields):
+    # The summed total of `terms`, and {term name: info} for those that report.
+    total, infos = 0.0, {}
+    for term in terms:
+        value, info = _split(term, "total", term.total(**term._args("total", fields)))
+        if jnp.ndim(value) != 0:
+            raise ValueError(
+                f"{term.name}.total returns shape {jnp.shape(value)}; an action "
+                "total must be a scalar."
+            )
+        total = total + value
+        _report(infos, term, info)
+
+    return total, infos
 
 
 @partial(jax.jit, static_argnums=(2,))
@@ -526,14 +577,9 @@ def _grad(action, fields, wrt):
     differentiated = [t for t in action.terms if t._hooks["gradient"] is None]
 
     def S_auto(sub):
-        merged = fields | sub
-        total = 0.0
-        for term in differentiated:
-            total = total + _scalar_total(term, merged)
+        return _totals(differentiated, fields | sub)
 
-        return total
-
-    grad = jax.grad(S_auto)({name: fields[name] for name in wrt})
+    grad, infos = jax.grad(S_auto, has_aux=True)({name: fields[name] for name in wrt})
 
     for term in action.terms:
         if term._hooks["gradient"] is None:
@@ -542,7 +588,10 @@ def _grad(action, fields, wrt):
         # Since this term is never differentiated, a requested field it leaves
         # out would silently get no contribution from it.
         bound = term._bind()
-        analytic = term.gradient(**term._args("gradient", fields))
+        analytic, info = _split(
+            term, "gradient", term.gradient(**term._args("gradient", fields))
+        )
+        _report(infos, term, info)
         missing = [n for r, n in bound.items() if n in wrt and r not in analytic]
         if missing:
             raise ValueError(
@@ -555,4 +604,4 @@ def _grad(action, fields, wrt):
             if name in grad:
                 grad[name] = grad[name] + contrib
 
-    return grad
+    return grad, infos
