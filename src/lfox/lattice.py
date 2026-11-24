@@ -5,9 +5,10 @@ import enum
 import math
 import numbers
 import operator
+import string
 from abc import ABC, abstractmethod
 from fractions import Fraction
-from functools import partial
+from functools import partial, reduce
 from typing import ClassVar, Optional
 
 import equinox as eqx
@@ -383,7 +384,23 @@ class LatticeField(eqx.Module):
         bc = tuple(b if b is DIRICHLET else b.conjugate() for b in self.bc)
         return self.copy_new_F(self.F.conj(), bc=bc)
 
-    # TODO: more arithmetic?
+    # --- internal axes (see `einsum`; none of these ever sums over sites) ---
+
+    def contract(self, *names):
+        """Sum over the named internal axes (all of them by default), per site."""
+        names = names or tuple(name for name, _ in self.axes)
+        for name in names:
+            if name not in dict(self.axes):
+                raise ValueError(f"this field has no axis {name!r}; its axes are {self.axes}")
+        return einsum(string.ascii_letters[: len(names)] + "->", self, axes=names)
+
+    def dot(self, other, *names):
+        """Contract the shared axes (or the named ones) of self * other, per site."""
+        return _dot(self, other, names)
+
+    def vdot(self, other, *names):
+        """`dot`, with self conjugated (as np.vdot): psi.vdot(psi) is |psi|^2."""
+        return _dot(self.conj(), other, names)
 
     @staticmethod
     @partial(jax.jit, static_argnums=(1, 2, 3, 4))
@@ -451,3 +468,187 @@ class LatticeField(eqx.Module):
 
     def copy(self):
         return self.__copy__()
+
+
+# --- einsum over internal axes -------------------------------------------------
+
+
+def einsum(pattern, *operands, axes=None, out_axes=None):
+    """numpy's einsum on the internal axes of fields, site by site.
+
+    Spacetime is the implicit `...`: never written, always elementwise, so the
+    result is a field.  `->` is required.  Operands are fields on one lattice
+    or raw arrays (site-independent constants such as gamma matrices).
+
+    Labels are local to the call.  A field's labels bind, in order, to the
+    axes listed in `axes` that it has; axes it has but `axes` doesn't list
+    pass through, aligned by name, like spacetime.  `axes=None` binds each
+    field's one axis, and is an error for a field with several.  A raw
+    array's labels bind to its dimensions in order.
+
+    An output label bound to a field axis keeps that axis's name.  A label
+    only constants carry is named after the field axes those constants reach
+    (it must be exactly one), or explicitly by `out_axes`.
+
+        lat.einsum("a,a->", phi, chi)                    # phi . chi
+        lat.einsum("ij,j->i", gamma5, psi, axes="spin")  # color passes through
+
+    The full rules are in axes_design.md.
+    """
+    terms, out = _parse(pattern, len(operands))
+    fields = [op for op in operands if isinstance(op, LatticeField)]
+    if not fields:
+        raise ValueError("lat.einsum needs at least one field among its operands")
+    lattice = fields[0].lattice
+    if any(f.lattice != lattice for f in fields):
+        raise ValueError("lat.einsum: fields on different lattices")
+    listed = _listed(axes, fields)
+
+    # Bind labels to axis names; collect the axes that pass through.
+    names, sizes, passing, subscripts = {}, (), (), []
+    free = iter(c for c in string.ascii_letters if c not in pattern)
+    through = {}
+    for term, op in zip(terms, operands):
+        if not isinstance(op, LatticeField):
+            if len(term) != jnp.ndim(op):
+                raise ValueError(f"term {term!r} for a constant of shape {jnp.shape(op)}")
+            subscripts.append(term)
+            continue
+        bound = _bound(op, listed)
+        if len(term) != len(bound):
+            raise ValueError(f"term {term!r} needs one label for each of the axes {bound}")
+        for label, name in zip(term, bound):
+            if names.setdefault(label, name) != name:
+                raise ValueError(f"label {label!r} binds both {names[label]!r} and {name!r}")
+        sizes = _merge_axes(sizes, op.axes)
+        passing = _merge_axes(passing, tuple(a for a in op.axes if a[0] not in bound))
+        label_of = dict(zip(bound, term))
+        for name, _ in op.axes:
+            if name not in label_of and name not in through:
+                through[name] = next(free)
+        subscripts.append(
+            "..." + "".join(label_of.get(name) or through[name] for name, _ in op.axes)
+        )
+
+    out_names = _name_outputs(out, terms, operands, names, dict(sizes), out_axes)
+    clash = set(out_names) & set(through)
+    if len(set(out_names)) != len(out_names) or clash:
+        raise ValueError(
+            f"axis {sorted(clash) or out_names} would appear twice in the result "
+            "(matrix-valued fields are not supported yet)"
+        )
+
+    arrays = [op.F if isinstance(op, LatticeField) else op for op in operands]
+    F = jnp.einsum(
+        ",".join(subscripts) + "->..." + out + "".join(through.values()), *arrays
+    )
+    new_axes = tuple(zip(out_names + [name for name, _ in passing], F.shape[len(lattice._dims):]))
+    _merge_axes(sizes, new_axes)  # a named output must match that axis's size
+    bc = reduce(lambda a, b: _mul_bc(a, b, None), [f.bc for f in fields])
+    return LatticeField(lattice=lattice, F=F, bc=bc, axes=new_axes)
+
+
+def _parse(pattern, n_operands):
+    if "..." in pattern:
+        raise ValueError("spacetime is implicit in lat.einsum: don't write '...'")
+    if pattern.count("->") != 1:
+        raise ValueError(f"lat.einsum needs an explicit output ('->'), got {pattern!r}")
+    inputs, out = pattern.replace(" ", "").split("->")
+    terms = inputs.split(",")
+    if len(terms) != n_operands:
+        raise ValueError(f"{pattern!r} has {len(terms)} terms for {n_operands} operands")
+    if not all(c.isalpha() for c in inputs.replace(",", "") + out):
+        raise ValueError(f"einsum labels are single letters, got {pattern!r}")
+    if len(set(out)) != len(out) or not set(out) <= set(inputs):
+        raise ValueError(f"bad output {out!r} in {pattern!r}")
+    return terms, out
+
+
+def _listed(axes, fields):
+    if axes is None:
+        return None
+    listed = (axes,) if isinstance(axes, str) else tuple(axes)
+    if len(set(listed)) != len(listed):
+        raise ValueError(f"axes lists a name twice: {listed}")
+    for name in listed:
+        if not any(name in dict(f.axes) for f in fields):
+            raise ValueError(f"no field has the axis {name!r}")
+    return listed
+
+
+def _bound(field, listed):
+    # The axes of `field` its labels refer to, in binding order.
+    own = [name for name, _ in field.axes]
+    if listed is not None:
+        return [name for name in listed if name in own]
+    if len(own) > 1:
+        raise ValueError(
+            f"a field with axes {own} needs axes= to say which its labels bind, "
+            "and in what order"
+        )
+    return own
+
+
+def _name_outputs(out, terms, operands, names, sizes, out_axes):
+    if out_axes is not None:
+        out_axes = (out_axes,) if isinstance(out_axes, str) else tuple(out_axes)
+        if len(out_axes) != len(out):
+            raise ValueError(f"out_axes {out_axes} must name each output label of {out!r}")
+        for label, name in zip(out, out_axes):
+            if names.get(label, name) != name:
+                raise ValueError(
+                    f"out_axes names {label!r} {name!r}, but it is the axis {names[label]!r}"
+                )
+        return list(out_axes)
+
+    constants = [(t, op) for t, op in zip(terms, operands) if not isinstance(op, LatticeField)]
+    terms = [t for t, _ in constants]
+    label_size = {l: n for t, op in constants for l, n in zip(t, jnp.shape(op))}
+    result = []
+    for label in out:
+        if label in names:
+            result.append(names[label])
+            continue
+        reached = _reached(label, terms, names)
+        if len(reached) != 1:
+            raise ValueError(
+                f"cannot name output label {label!r}: its constants reach "
+                f"{sorted(reached) or 'no field axis'}; name it with out_axes="
+            )
+        (name,) = reached
+        if sizes[name] != label_size[label]:  # a rectangular map: a new space
+            raise ValueError(
+                f"output label {label!r} has size {label_size[label]}, but its constants "
+                f"reach {name!r} of size {sizes[name]}; name it with out_axes="
+            )
+        result.append(name)
+    return result
+
+
+def _reached(label, constants, names):
+    # Follow constants outward from `label`, stopping at field-bound labels;
+    # return the axis names reached.
+    seen, todo, reached = {label}, [label], set()
+    while todo:
+        here = todo.pop()
+        for term in constants:
+            if here in term:
+                for other in term:
+                    if other in names:
+                        reached.add(names[other])
+                    elif other not in seen:
+                        seen.add(other)
+                        todo.append(other)
+    return reached
+
+
+def _dot(a, b, names):
+    if not isinstance(b, LatticeField):
+        raise TypeError(f"dot/vdot take a LatticeField, got {type(b).__name__}")
+    shared = [name for name, _ in a.axes if name in dict(b.axes)]
+    names = names or tuple(shared)
+    for name in names:
+        if name not in shared:
+            raise ValueError(f"axis {name!r} is not on both fields")
+    labels = string.ascii_letters[: len(names)]
+    return einsum(f"{labels},{labels}->", a, b, axes=names)
