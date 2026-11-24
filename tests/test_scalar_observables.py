@@ -289,3 +289,149 @@ def test_free_field_susceptibility_binder_and_xi(free):
     assert within(chi, dchi, free_field.chi_exact(FREE_DIMS, KAPPA))
     assert within(U, dU, 0.0)  # m is exactly Gaussian
     assert within(xi, dxi, free_field.xi_2nd_exact(FREE_DIMS, KAPPA))
+
+
+# --- O(N): fields with an internal axis ---------------------------------------
+#
+# The plain scalar is N = 1.  Per configuration, the magnetization keeps the
+# internal axes (m_a, shape (N,)); everything quadratic contracts them, so G(p),
+# C(t) and nn_product are sums over components.  Ensemble estimators contract
+# the trailing axes of their columns: chi = V(<m.m> - <m>.<m>), and the Binder
+# cumulant is U = 1 - N/(N+2) <(m.m)^2>/<m.m>^2, which is 0 for a Gaussian and
+# 2/(N+2) for an ordered phase.
+
+N = 3
+
+
+@pytest.fixture
+def vec(lattice):
+    F = jax.random.normal(jax.random.PRNGKey(1), DIMS + (N,))
+    return lat.LatticeField(lattice=lattice, F=F, axes={"a": N})
+
+
+def component(vec, a):
+    return lat.LatticeField(lattice=vec.lattice, F=vec.F[..., a])
+
+
+def test_magnetization_of_an_on_field_is_a_vector(vec):
+    m = magnetization(vec)
+    assert m.shape == (N,)
+    assert np.allclose(m, np.mean(np.asarray(vec.F), axis=(0, 1, 2)))
+
+
+@pytest.mark.parametrize(
+    "observable",
+    [
+        nn_product,
+        lambda phi: structure_factor(phi, (0, 0, 0)),
+        lambda phi: structure_factor(phi, (1, 0, 2)),
+        lambda phi: correlator(phi, axis=1),
+    ],
+    ids=["nn_product", "G(0)", "G(p)", "C(t)"],
+)
+def test_on_two_point_observables_sum_over_components(vec, observable):
+    total = sum(observable(component(vec, a)) for a in range(N))
+    assert np.allclose(observable(vec), total)
+
+
+def test_on_zero_momentum_identities(vec):
+    # G(0) = V m.m = sum_t C(t): the volume is the number of sites, not of
+    # numbers in the field.
+    V = np.prod(DIMS)
+    m = np.asarray(magnetization(vec))
+    G0 = structure_factor(vec, (0, 0, 0))
+
+    assert G0 == pytest.approx(V * m @ m)
+    for axis in range(3):
+        assert jnp.sum(correlator(vec, axis=axis)) == pytest.approx(G0)
+
+
+def test_on_observables_are_jittable(vec):
+    @jax.jit
+    def measure(phi):
+        return {
+            "m": magnetization(phi),
+            "nn": nn_product(phi),
+            "Gp": structure_factor(phi, (1, 0, 0)),
+            "C": correlator(phi),
+        }
+
+    out = measure(vec)
+    assert out["m"].shape == (N,)
+    assert out["Gp"].shape == ()
+    assert out["C"].shape == (DIMS[0],)
+
+
+def test_susceptibility_contracts_the_components():
+    m = np.random.default_rng(2).standard_normal((100, N)) + [0.2, -0.1, 0.3]
+    V = 64
+    expected = V * (np.mean(np.sum(m**2, axis=-1)) - np.sum(np.mean(m, axis=0) ** 2))
+
+    assert susceptibility(m, volume=V) == pytest.approx(expected)
+    # A column of one-component vectors is the plain scalar.
+    assert susceptibility(m[:, :1], volume=V) == pytest.approx(susceptibility(m[:, 0], volume=V))
+
+
+def test_broken_phase_on_susceptibility_is_susceptibility_of_the_norm():
+    # As for N = 1 with |m|: V(<m.m> - <|m|>^2).
+    m = np.random.default_rng(3).standard_normal((100, N))
+    V = 64
+    norm = np.linalg.norm(m, axis=-1)
+    assert susceptibility(norm, volume=V) == pytest.approx(
+        V * (np.mean(np.sum(m**2, axis=-1)) - np.mean(norm) ** 2)
+    )
+
+
+@pytest.mark.parametrize("n_comp", [1, 2, 3, 4])
+def test_binder_of_an_ordered_on_phase_is_two_over_N_plus_2(n_comp):
+    directions = np.random.default_rng(4).standard_normal((200, n_comp))
+    m = 0.7 * directions / np.linalg.norm(directions, axis=-1, keepdims=True)
+    assert binder(m) == pytest.approx(2 / (n_comp + 2))
+
+
+def test_binder_of_a_one_component_column_is_the_scalar():
+    m = np.random.default_rng(5).standard_normal(100)
+    assert binder(m[:, None]) == pytest.approx(binder(m))
+
+
+# --- O(N) end to end, on exact free-field samples ------------------------------
+
+N_SAMPLES_ON = 2000
+
+
+@pytest.fixture(scope="module")
+def free_on():
+    lattice = lat.SquareLattice(st_dims=FREE_DIMS)
+    configs = free_field.sample_on(jax.random.PRNGKey(43), FREE_DIMS, KAPPA, N_SAMPLES_ON, N)
+    return lattice, configs
+
+
+def test_free_on_field_susceptibility_binder_and_xi(free_on):
+    # N independent free fields: chi and G(p) are N times the one-component
+    # values, xi is unchanged, and m is exactly Gaussian, so U = 0.
+    lattice, configs = free_on
+    V, L = np.prod(FREE_DIMS), FREE_DIMS[1]
+    axes = {"a": N}
+    m = free_field.measure(magnetization, lattice, configs, axes)
+    Gp = free_field.measure(lambda phi: structure_factor(phi, (0, 1, 0)), lattice, configs, axes)
+    assert m.shape == (N_SAMPLES_ON, N)
+
+    chi, dchi = jackknife(susceptibility, m, volume=V)
+    U, dU = jackknife(binder, m)
+    xi, dxi = jackknife(xi_2nd, m, Gp, volume=V, L=L)
+
+    assert within(chi, dchi, N * free_field.chi_exact(FREE_DIMS, KAPPA))
+    assert within(U, dU, 0.0)
+    assert within(xi, dxi, free_field.xi_2nd_exact(FREE_DIMS, KAPPA))
+
+
+def test_free_on_field_correlator(free_on):
+    lattice, configs = free_on
+    C = free_field.measure(correlator, lattice, configs, {"a": N})
+
+    assert C.shape == (N_SAMPLES_ON, FREE_DIMS[0])
+    assert within(
+        C.mean(axis=0),
+        C.std(axis=0) / np.sqrt(N_SAMPLES_ON),
+        N * free_field.correlator_exact(FREE_DIMS, KAPPA),
+    )

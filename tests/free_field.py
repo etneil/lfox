@@ -67,7 +67,14 @@ def sample(key, st_dims, kappa, n):
     return jnp.fft.ifftn(colored, axes=axes).real
 
 
-def measure(observable, lattice, configs):
+def sample_on(key, st_dims, kappa, n, N):
+    # n configurations of N independent free fields: the free O(N) model,
+    # shape (n, *st_dims, N).
+    configs = sample(key, st_dims, kappa, n * N).reshape(n, N, *st_dims)
+    return jnp.moveaxis(configs, 1, -1)
+
+
+def measure(observable, lattice, configs, axes=()):
     # Apply a per-configuration observable to a stack of raw arrays.
-    wrapped = lambda F: observable(lat.LatticeField(lattice=lattice, F=F))
+    wrapped = lambda F: observable(lat.LatticeField(lattice=lattice, F=F, axes=axes))
     return np.asarray(jax.vmap(wrapped)(configs), dtype=np.float64)
