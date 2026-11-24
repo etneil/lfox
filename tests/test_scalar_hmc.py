@@ -131,3 +131,106 @@ def test_hmc_detailed_balance():
 
     mean_exp = float(np.mean(np.exp(-np.array(monitor['delta_H']))))
     assert 0.9 < mean_exp < 1.1, f"<exp(-dH)> = {mean_exp:.4f}, expected ~1.0"
+
+
+# --- momenta are fields -------------------------------------------------------
+#
+# A momentum is a field like the one it moves: the same lattice, internal axes
+# and boundary conditions, so that X + eps P is well defined.  The kinetic
+# energy contracts the internal axes, 0.5 p.p per site, so H is one number per
+# site like the action density.  (Complex fields and fields on a group
+# manifold are later: they need the full field-type protocol.)
+
+import pytest  # noqa: E402
+
+from lfox.action import Term  # noqa: E402
+
+
+class ONPhi4(Term):
+    # An O(N) phi^4 action written with dot: one number per site for any N.
+    kappa: float
+    lamb: float
+
+    def density(self, phi):
+        phi2 = phi.dot(phi)
+        S = phi2 + self.lamb * (phi2 - 1) ** 2
+        for ax in range(phi.d()):
+            S -= 2 * self.kappa * phi.dot(phi.nn_field(ax))
+        return S
+
+
+L2 = lat.SquareLattice(st_dims=(4, 4))
+BCS = [(1, 1), (-1, 1), (0, 1)]  # periodic, antiperiodic, Dirichlet in x
+
+
+def _on_field(key, bc=(1, 1), N=3):
+    F = 0.5 * jax.random.normal(jax.random.PRNGKey(key), (4, 4, N))
+    return lat.LatticeField(lattice=L2, F=F, axes={"a": N}, bc=bc)
+
+
+def _on_hmc(eps=0.1, Nstep=10):
+    return HMC(
+        action=ONPhi4(kappa=0.1, lamb=0.5),
+        integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
+    )
+
+
+@pytest.mark.parametrize("bc", BCS, ids=str)
+def test_momenta_are_fields_like_the_fields_they_move(bc):
+    phi = _on_field(0, bc)
+    pi, _ = _on_hmc().momentum_refresh({"phi": phi}, jax.random.PRNGKey(1))
+    p = pi["phi"]
+
+    assert isinstance(p, lat.LatticeField)
+    assert p.lattice == phi.lattice
+    assert p.axes == phi.axes
+    assert p.bc == phi.bc
+    assert p.F.shape == phi.F.shape
+
+
+def test_momenta_for_a_plain_scalar_are_fields_too(phi4, scalar_action):
+    hmc = HMC(action=scalar_action, integrator=LeapfrogIntegrator(eps=0.1, Nstep=10))
+    pi, _ = hmc.momentum_refresh({"phi": phi4}, jax.random.PRNGKey(1))
+    assert isinstance(pi["phi"], lat.LatticeField)
+    assert pi["phi"].axes == ()
+
+
+def test_kinetic_energy_contracts_the_internal_axes():
+    phi = _on_field(2)
+    hmc = _on_hmc()
+    pi, _ = hmc.momentum_refresh({"phi": phi}, jax.random.PRNGKey(3))
+    S_field = hmc.action.S_field({"phi": phi})
+
+    H = hmc.H_density(S_field, pi)
+    assert H.axes == ()
+    kinetic = 0.5 * jnp.sum(pi["phi"].F ** 2, axis=-1)
+    assert jnp.allclose(H.F, S_field.F + kinetic)
+    assert jnp.isclose(hmc.H(S_field, pi), jnp.sum(S_field.F + kinetic))
+
+
+@pytest.mark.parametrize("bc", BCS, ids=str)
+def test_hmc_evolves_an_on_field(bc):
+    phi = _on_field(4, bc)
+    fields, monitor, _ = _on_hmc().evolve_many({"phi": phi}, jax.random.PRNGKey(5), traj=5)
+
+    new = fields["phi"]
+    assert new.axes == phi.axes
+    assert new.bc == phi.bc
+    assert jnp.all(jnp.isfinite(new.F))
+    assert jnp.all(jnp.isfinite(monitor["delta_H"]))
+
+
+@pytest.mark.parametrize("bc", BCS, ids=str)
+def test_md_energy_violation_shrinks_as_eps_squared(bc):
+    # Leapfrog conserves H up to O(eps^2) at fixed trajectory length -- only if
+    # the force is the gradient of the H that is measured.  A kinetic term
+    # that disagreed with the momenta (say, summed over the wrong axes) would
+    # leave an O(1) violation.
+    phi = _on_field(6, bc)
+    pi, _ = _on_hmc().momentum_refresh({"phi": phi}, jax.random.PRNGKey(7))
+
+    dH = [
+        abs(float(_on_hmc(eps, n).MD_traj({"phi": phi}, pi)[2]))
+        for eps, n in [(0.1, 10), (0.05, 20)]
+    ]
+    assert 3.0 < dH[0] / dH[1] < 5.0, dH

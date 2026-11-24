@@ -1047,3 +1047,58 @@ def test_multi_flavor_assembly(phi, key):
 
     # Only the evolved field carries a force.
     assert set(S.dS(fields)) == {"phi"}
+
+
+# --- an action density is one number per site --------------------------------
+#
+# A field with internal axes has several numbers per site, and the action needs
+# one: the density must have contracted them.  The bug this pins: a term
+# written for a plain scalar, phi**4, applied to an O(N) field is N decoupled
+# quartic fields, not (phi . phi)**2 -- and the total summed every component
+# without complaint.
+
+
+class ScalarQuartic(Term):
+    def density(self, phi):
+        return phi**4
+
+
+class ONQuartic(Term):
+    def density(self, phi):
+        return phi.dot(phi) ** 2
+
+
+class ComponentTotal(Term):
+    def total(self, phi):
+        return jnp.sum(phi.F, axis=(0, 1, 2))  # one number per component
+
+
+@pytest.fixture
+def vec(lat4):
+    F = jax.random.normal(jax.random.PRNGKey(2), lat4.st_dims + (3,))
+    return lat.LatticeField(lattice=lat4, F=F, axes={"a": 3})
+
+
+def test_a_density_with_internal_axes_is_an_error(vec):
+    S = Action(ScalarQuartic())
+    for evaluate in (S.S, S.S_field, S.dS):
+        with pytest.raises(ValueError, match="contract"):
+            evaluate({"phi": vec})
+
+
+def test_a_contracted_density_is_fine(vec):
+    S = Action(ONQuartic())
+    phi2 = jnp.sum(vec.F**2, axis=-1)
+
+    assert S.S_field({"phi": vec}).axes == ()
+    assert jnp.isclose(S.S({"phi": vec}), jnp.sum(phi2**2))
+    grad = S.dS({"phi": vec})["phi"]
+    assert grad.axes == vec.axes
+    assert jnp.allclose(grad.F, 4 * phi2[..., None] * vec.F)
+
+
+def test_a_total_must_be_a_scalar(vec):
+    S = Action(ComponentTotal())
+    for evaluate in (S.S, S.dS):
+        with pytest.raises(ValueError, match="scalar"):
+            evaluate({"phi": vec})
