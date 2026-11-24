@@ -179,7 +179,7 @@ class Term(eqx.Module):
     def total(self, **fields):
         # Total action, as a scalar.  The default sums the density, which is
         # what a local term wants; a nonlocal term overrides this instead.
-        return jnp.sum(self.density(**fields).F)
+        return jnp.sum(_per_site(self, self.density(**fields)).F)
 
     def draw(self, key, **fields):
         # Exact heatbath for this term's `sampled` roles, given the others.
@@ -445,7 +445,7 @@ class Action(eqx.Module):
         # Action density, as a LatticeField.  Raises if any term is nonlocal.
         density = None
         for term in self.terms:
-            contrib = term.density(**term._args("density", fields))
+            contrib = _per_site(term, term.density(**term._args("density", fields)))
             density = contrib if density is None else density + contrib
 
         return density
@@ -454,7 +454,7 @@ class Action(eqx.Module):
     def S(self, fields):
         total = 0.0
         for term in self.terms:
-            total = total + term.total(**term._args("total", fields))
+            total = total + _scalar_total(term, fields)
 
         return total
 
@@ -493,6 +493,30 @@ class Action(eqx.Module):
         return drawn
 
 
+def _per_site(term, density):
+    # An action density is one number per site, so a field with internal axes
+    # must have contracted them.  Summing them silently is the bug: phi**4 on
+    # an O(N) field is N decoupled quartic fields, not (phi . phi)**2.
+    axes = getattr(density, "axes", ())
+    if axes:
+        raise ValueError(
+            f"{term.name}.density returns a field with internal axes {axes}, but an "
+            "action density is one number per site: contract them "
+            "(phi.dot(phi) rather than phi**2, or .contract())."
+        )
+    return density
+
+
+def _scalar_total(term, fields):
+    total = term.total(**term._args("total", fields))
+    if jnp.ndim(total) != 0:
+        raise ValueError(
+            f"{term.name}.total returns shape {jnp.shape(total)}; an action total "
+            "must be a scalar."
+        )
+    return total
+
+
 @partial(jax.jit, static_argnums=(2,))
 def _grad(action, fields, wrt):
     # Differentiate the terms that do not supply a gradient, then add in the
@@ -505,7 +529,7 @@ def _grad(action, fields, wrt):
         merged = fields | sub
         total = 0.0
         for term in differentiated:
-            total = total + term.total(**term._args("total", merged))
+            total = total + _scalar_total(term, merged)
 
         return total
 

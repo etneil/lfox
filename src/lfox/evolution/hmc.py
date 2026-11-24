@@ -26,9 +26,11 @@ class HMC(Evolver):
         return dataclasses.replace(self, warmup=True)
 
     def H_density(self, S_field, pi_fields):
-        H_field = S_field.copy()
-        for fname in pi_fields.keys():
-            H_field += 0.5 * pi_fields[fname] ** 2
+        # H per site: the action density plus 0.5 p.p, with any internal axes
+        # of the momenta contracted.
+        H_field = S_field
+        for p in pi_fields.values():
+            H_field = H_field + 0.5 * p.vdot(p)
 
         return H_field
 
@@ -38,10 +40,16 @@ class HMC(Evolver):
         return jnp.sum(H_field.F)
 
     def momentum_refresh(self, fields, rng_key):
+        # Gaussian momenta, one per evolved field.  Each is a field like the one
+        # it moves -- same lattice, internal axes and boundary conditions -- so
+        # that X + eps P is well defined.
         pi_fields = {}
         for fname in self.action.evolved_fields:
             rng_key, subkey = jax.random.split(rng_key)
-            pi_fields[fname] = jax.random.normal(subkey, shape=fields[fname].F.shape)
+            field = fields[fname]
+            pi_fields[fname] = field.copy_new_F(
+                jax.random.normal(subkey, shape=field.F.shape)
+            )
 
         return pi_fields, rng_key
 
