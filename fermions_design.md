@@ -133,6 +133,8 @@ Failing tests first at each step, pausing for review.
    non-converging solve; complex-Hermitian gradient against finite differences; jit.
 3. Diagnostics plumbing: a toy term returning info; monitor keys and shapes for both
    integrators; `Chain` warns on non-convergence; nothing changes for terms without info.
-4. Pseudofermion fixture and physics: exact heatbath (equipartition ⟨S_pf⟩ = number of
-   complex components); force against finite differences; ⟨e^{−ΔH}⟩ = 1; a tiny-lattice
-   check against exact det(M†M) from `dense`.
+4. Pseudofermion fixture (`tests/pseudofermion.py`), unit-tested against the dense M†M:
+   the action; the heatbath covariance ⟨ηη†⟩ = M†M, ⟨ηηᵀ⟩ = 0 (stronger than equipartition);
+   the force against dense autodiff and finite differences. The statistical HMC checks
+   (⟨e^{−ΔH}⟩ = 1, sampling with weight det(M†M)) are integration-scale and left to a
+   scalar-Yukawa integration test.

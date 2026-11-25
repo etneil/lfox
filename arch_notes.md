@@ -75,6 +75,7 @@ Rewritten on branch `fermions`; the design, and the order of the remaining work 
 ### Tests and integration
 
 - `tests/phi4.py` — `ScalarTerm`, the reference O(N) φ⁴ term (written with `dot`; a field with no axes is N = 1), with an analytic gradient for checking autodiff.  `tests/test_on_model.py` pins it as the O(N) model: N = 1 reduction, rotation invariance, force, ⟨e^{−ΔH}⟩ = 1, and free-field equipartition and χ under HMC.  `tests/conftest.py` provides fixtures (`scalar_action`, `lat4`, `phi4`).
+- `tests/pseudofermion.py` — `Pseudofermion(kappa, g)`, the reference pseudofermion term: two degenerate flavors of a Yukawa-Wilson fermion, M(φ)ψ = `wilson(ψ, κ) + g φ ψ`, S = η†(M†M)⁻¹η by `cg` (nonlocal: `total` only, returning the solve's info), heatbath η = M†ξ (`draw` takes the current η as a shape template).  `tests/test_pseudofermion.py` pins it against the dense M†M on a 16-component lattice: the action, the heatbath covariance ⟨ηη†⟩ = M†M and ⟨ηηᵀ⟩ = 0, and the force (dense autodiff and finite differences).  HMC-level checks with it (⟨e^{−ΔH}⟩ = 1, sampling with weight det M†M) belong in integration tests.
 - `tests/free_field.py` — exact, independent samples of the free (λ = 0) field via FFT (`sample_on` for N independent fields), plus closed-form χ, ξ₂, C(t) and pole mass: the reference values the observables are tested against.
 - `integration/reproduce_schaefer.py` — reproduction of Schaefer's φ⁴ exercises; `integration/pseudofermion_marginal.py` — heatbath + HMC composition against an exact marginal.  Both are jupytext-paired notebooks.
 
