@@ -102,21 +102,46 @@ diagnostics flow out through one channel:
 - **Non-convergence:** recorded, never forced into a rejection (that would hide a solver
   problem behind a lower acceptance). `Chain` warns, host-side, when any monitor entry
   `"<term>.converged"` in a block is false.
-- **Known limitations:** the backward-pass (adjoint) solve's diagnostics are discarded by
-  JAX, so each force evaluation records its forward solve only. And the autodiff force costs
-  two solves where the hand-written −x†(dA)x needs one.
+- **Known limitations:** differentiating through `cg` adds a backward-pass (adjoint) solve
+  whose diagnostics JAX discards. `PseudoFermion`'s force avoids it (`stationary_form`,
+  below), so its monitor entries count every solve.
 
 ## Pseudofermions
 
 - `total` = η†(M†M)⁻¹η, a nonlocal term returning `(S, info)`.
 - `draw`: η = M†ξ with ξ a complex Gaussian of density exp(−ξ†ξ) (ξ = (a + ib)/√2); then
   η†(M†M)⁻¹η = ξ†ξ. The term declares `sampled = ("eta",)`.
-- The force is autodiff through `cg`. A hand-written `gradient` (one solve) is a later
-  optimization, checked against autodiff and finite differences.
-- Two degenerate flavors fit one pseudofermion of M†M. An odd number needs RHMC: out of
-  scope.
-- The first pseudofermion term is a test fixture, like `ScalarTerm`; a library preset waits
-  until the Yukawa work shows what repeats.
+- **The force is one solve, by `lfox.linalg.stationary_form(A, b)`**: b†A⁻¹b computed as
+  max_x [2 Re(x†b) − x†Ax] at x = A⁻¹b, with x frozen by `stop_gradient`. Stationarity in x
+  makes first derivatives exact without differentiating the solve (differentiating
+  `vdot(b, cg(A, b))` costs a second, adjoint solve). Second derivatives are not exact,
+  which matters for force-gradient integrators; documented, not guarded. Measured at L = 4:
+  36 µs against 66 µs per force. (The value is no more accurate than `vdot(b, x)`: for CG
+  from x0 = 0 the two coincide by Galerkin orthogonality. Its one guarantee on the value is
+  that it never exceeds b†A⁻¹b, for any x.)
+- Two degenerate flavors fit one pseudofermion of M†M; more flavors are more pseudofermions
+  (`replicate(n, "eta")`). An odd number needs RHMC: out of scope.
+- **Library class `lfox.fermions.PseudoFermion`**, promoted from the test fixture once two
+  integration notebooks had each rewritten it. A subclass supplies only
+  `fermion_matrix(self, *bosons)`, returning M as a linear function of spinors, and gets
+  `total` (plain `cg`, exact to all orders), `draw` (η = M†ξ) and `gradient` (via
+  `stationary_form`, covering every role). The name is `fermion_matrix`, not "Dirac
+  operator", because the class needs only linearity: non-relativistic (Hubbard, nuclear
+  EFT) fermion matrices fit too.
+  - Roles: `fermion_matrix`'s parameters, then `eta`, declared from `__init_subclass__`
+    through `Term.roles` (a base class whose hooks are generic over its subclasses' fields
+    declares them; its hooks take `**fields`). This keeps gauge (`fermion_matrix(self, U)`)
+    and gauge-Yukawa (`fermion_matrix(self, U, phi)`) theories in reach.
+  - Guards: `fermion_matrix` must name its fields and may not take `eta`; a subclass
+    overriding `total` must override `gradient` too (the inherited force would belong to
+    the base action). Overriding `gradient` alone, with a hand-written force, is the
+    intended optimization path.
+  - Later: an `ExactFermion` sibling sharing `fermion_matrix`, with S = −log det(M†M) by
+    `dense`, for exact cross-checks at small volume. Hasenbusch and rational terms would be
+    siblings built on `stationary_form`, not subclasses.
+  - For gauge fields: `dS` returns the plain gradient; projection onto the Lie algebra
+    belongs to the group-aware evolver. The first evolved complex field must also pin
+    which Wirtinger derivative `dS` returns.
 
 ## Legacy code
 
@@ -138,3 +163,7 @@ Failing tests first at each step, pausing for review.
    the force against dense autodiff and finite differences. The statistical HMC checks
    (⟨e^{−ΔH}⟩ = 1, sampling with weight det(M†M)) are integration-scale and left to a
    scalar-Yukawa integration test.
+5. `stationary_form` and the library `PseudoFermion` (above), with `Term.roles`; the fixture
+   becomes a subclass (`YukawaFermion`). HMC-level checks live in
+   `integration/reproduce_kanwar.py`: ⟨e^{−ΔH}⟩ = 1, and pseudofermion HMC against HMC with
+   the exact determinant.

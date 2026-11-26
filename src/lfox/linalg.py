@@ -81,3 +81,25 @@ def cg(A, b, x0=None, *, tol=1e-10, maxiter=1000):
         return x, {"iterations": k, "residual": residual, "converged": residual <= tol}
 
     return jax.lax.custom_linear_solve(A, b, solve, transpose_solve=solve, has_aux=True)
+
+
+def stationary_form(A, b, **cg_kwargs):
+    """b^dagger A^-1 b for Hermitian positive-definite A, as `(value, info)`.
+
+    For a quadratic form of a solve whose *derivatives* are wanted -- a
+    pseudofermion action, differentiated for the HMC force.  It is computed as
+
+        max_x [2 Re(x^dagger b) - x^dagger A x],  attained at x = A^-1 b,
+
+    with the solve's x frozen (no gradient flows through it).  The form is
+    stationary in x, so its first derivatives in b and in whatever A closes
+    over are exact without differentiating the solve: one `cg` solve, where
+    differentiating `vdot(b, cg(A, b))` takes two.  SECOND DERIVATIVES ARE NOT
+    EXACT; differentiate through `cg` when you need them.
+
+    As a maximum, the value never exceeds b^dagger A^-1 b, whatever x the solve
+    stops at.  `cg_kwargs` go to `cg`, whose info is returned.
+    """
+    x, info = cg(A, b, **cg_kwargs)
+    x = jax.lax.stop_gradient(x)
+    return 2 * jnp.vdot(x.F, b.F).real - jnp.vdot(x.F, A(x).F).real, info

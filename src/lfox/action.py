@@ -13,8 +13,8 @@ Two classes, with one job each:
 Two vocabularies meet in this file:
 
   * Author hooks -- `density`, `total`, `draw`, `gradient` -- take fields as
-    ROLES, by name.  A term's roles are read from its hook signature, so
-    writing the term is what names its fields.
+    ROLES, by name.  A term's roles are read from its hook signature (or
+    declared; see below), so writing the term is what names its fields.
   * The public API -- `S_field`, `S`, `dS`, `sample` -- takes and returns
     dicts keyed by EXTERNAL field name.  `rebind` maps one onto the other;
     with no rebinding the two coincide.  `Term.rebind` is keyed by role and
@@ -36,6 +36,12 @@ retrace when it changes -- and note that a traced coupling cannot be used in an
 
     S = Mass(m2=0.1) + Hopping(kappa=0.18)
     S({'phi': phi})         # the total action; same as S.S(...)
+
+A base class whose hooks are generic over its subclasses' fields -- a library
+pseudofermion, whose bosonic fields belong to the subclass -- declares them
+with `roles = (...)`, possibly from its own `__init_subclass__`.  Its hooks may
+then take `**fields` and receive every role; until roles are declared it is an
+abstract base.
 
 `S` and `dS` are the interface every evolver depends on.  `sampled_fields` /
 `evolved_fields` are a structural declaration: a sampled field has an exact
@@ -73,8 +79,14 @@ class DuplicateTermError(ValueError):
     pass
 
 
+# A **fields hook on a class with no declared roles: an abstract base.
+_GENERIC = object()
+
+
 def _hook_roles(cls, hook):
-    # Roles of one author hook, or None if this class does not supply it.
+    # Roles of one author hook, or None if this class does not supply it.  A
+    # hook taking **fields gets every declared role; without a declaration it
+    # is _GENERIC, and its class an abstract base.
     fn = getattr(cls, hook)
     if fn is getattr(Term, hook):
         return None
@@ -83,14 +95,21 @@ def _hook_roles(cls, hook):
     if hook == "draw":
         params = params[1:]  # ...and the key
 
-    variadic = [p.name for p in params if p.kind.name.startswith("VAR_")]
-    if variadic:
+    positional = [p.name for p in params if p.kind is p.VAR_POSITIONAL]
+    if positional:
         raise TypeError(
-            f"{cls.__name__}.{hook} may not take *args or **kwargs {variadic}; "
-            "a term's roles are read from its signature and must be explicit."
+            f"{cls.__name__}.{hook} may not take *{positional[0]}; roles are "
+            "passed by name."
         )
 
-    return tuple(p.name for p in params)
+    named = tuple(p.name for p in params if p.kind is not p.VAR_KEYWORD)
+    if len(named) == len(params):
+        return named
+    if cls.roles is None:
+        return _GENERIC
+    _require_subset(cls, named, cls.roles, hook)
+    return cls.roles
+
 
 
 def _require_subset(cls, roles, allowed, what):
@@ -126,6 +145,10 @@ class Term(eqx.Module):
     # Roles this term draws from an exact conditional, declared by the author.
     sampled: ClassVar[tuple[str, ...]] = ()
 
+    # Roles declared outright, for a base class whose hooks are generic over
+    # its subclasses' fields and take **fields.
+    roles: ClassVar[tuple[str, ...] | None] = None
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
@@ -134,13 +157,16 @@ class Term(eqx.Module):
         # subset of them.
         hooks = {hook: _hook_roles(cls, hook) for hook in _HOOKS}
         cls._hooks = hooks
-        cls._roles = hooks["density"]
+        if any(roles is _GENERIC for roles in hooks.values()):
+            cls._roles = None  # an abstract base: subclasses declare roles
+            return
+        cls._roles = cls.roles or hooks["density"]
         if cls._roles is None:
             cls._roles = hooks["total"]
         if cls._roles is None:
             return
 
-        for hook in ("total", "draw", "gradient"):
+        for hook in ("density", "total", "draw", "gradient"):
             _require_subset(cls, hooks[hook], cls._roles, hook)
         _require_subset(cls, cls.sampled, cls._roles, "sampled")
         if cls.sampled and hooks["draw"] is None:
@@ -152,8 +178,9 @@ class Term(eqx.Module):
         cls = type(self)
         if cls._roles is None:
             raise TypeError(
-                f"{cls.__name__} defines neither density nor total, so it can "
-                "be subclassed but not instantiated."
+                f"{cls.__name__} defines neither density nor total, or has "
+                "generic hooks but declares no roles, so it can be subclassed "
+                "but not instantiated."
             )
 
         if self.binding and len(self.binding) != len(cls._roles):
