@@ -20,6 +20,15 @@ function, fermionic or not:
     It is jittable, and differentiable by implicit differentiation, never
     through the iterations: for complex Hermitian A the transposed system is
     conj(A), not A, and getting that wrong gives a silently wrong gradient.
+  * **`stationary_form(A, b, **cg_kwargs)`** is b^dagger A^-1 b for Hermitian
+    positive-definite A, returned as `(value, info)` with `cg`'s info.  It is
+    computed as the stationary value of 2 Re(x^dagger b) - x^dagger A x, which
+    is maximal at x = A^-1 b, with the solve's x frozen (no gradient flows
+    through it).  Since the form is stationary in x, its first derivatives --
+    in b, and in whatever A closes over -- are exact with one solve, where
+    differentiating through `cg` takes two.  Second derivatives are not exact
+    (documented, not tested).  As a maximum, the value never exceeds
+    b^dagger A^-1 b, and its error is quadratic in the solve's residual.
 """
 
 import jax
@@ -270,3 +279,61 @@ def test_cg_gradient_matches_finite_differences(linalg, field):
     fd = (S(sigma.copy_new_F(sigma.F + h * direction))
           - S(sigma.copy_new_F(sigma.F - h * direction))) / (2 * h)
     assert float(jnp.sum(grad.F * direction)) == pytest.approx(float(fd), rel=1e-6)
+
+
+# --- stationary_form ----------------------------------------------------------
+
+
+def _dense_form(A, b):
+    # b^dagger A^-1 b from the dense matrix, independent of cg.
+    v = b.F.ravel()
+    return jnp.vdot(v, jnp.linalg.solve(_dense_matrix(A, b), v)).real
+
+
+def _dense_matrix(A, like):
+    from lfox.linalg import dense
+
+    return dense(A, like)
+
+
+def test_stationary_form_is_b_dagger_A_inverse_b(linalg):
+    A, b = _mdagm(_sigma()), _spinor(22)
+    value, info = linalg.stationary_form(A, b)
+
+    assert float(value) == pytest.approx(float(_dense_form(A, b)), rel=1e-10)
+    assert set(info) == {"iterations", "residual", "converged"}
+    assert bool(info["converged"])
+
+
+def test_stationary_form_never_overshoots_and_errs_quadratically(linalg):
+    # With e = x - A^-1 b and r = A e, the error is -r^dag A^-1 r: never
+    # positive, and at most (|r|/|b|)^2 cond(A) relative to b^dag A^-1 b.
+    # Stopping the solve early makes the error large enough to see.  (On this
+    # small system CG converges superlinearly, so a loose `tol` would not.)
+    A, b = _mdagm(_sigma()), _spinor(24)
+    value, info = linalg.stationary_form(A, b, maxiter=6)
+
+    exact = float(_dense_form(A, b))
+    eigs = np.linalg.eigvalsh(np.asarray(_dense_matrix(A, b)))
+    residual = float(info["residual"])
+    assert residual > 1e-2  # the solve really did stop early
+    assert float(value) <= exact * (1 + 1e-12)
+    assert (exact - float(value)) / exact <= residual**2 * eigs[-1] / eigs[0]
+
+
+def test_stationary_form_gradients_match_the_dense_form(linalg):
+    # In b and in the operator's background sigma: both first derivatives
+    # are exact even though the solve is never differentiated.
+    sigma, b = _sigma(), _spinor(23)
+
+    def S(sigma, b):
+        return linalg.stationary_form(_mdagm(sigma), b)[0]
+
+    def S_dense(sigma_F, b_F):
+        return _dense_form(_mdagm(sigma.copy_new_F(sigma_F)), b.copy_new_F(b_F))
+
+    d_sigma, d_b = jax.jit(jax.grad(S, argnums=(0, 1)))(sigma, b)
+    ref_sigma, ref_b = jax.grad(S_dense, argnums=(0, 1))(sigma.F, b.F)
+
+    assert jnp.allclose(d_sigma.F, ref_sigma, rtol=1e-7, atol=1e-10)
+    assert jnp.allclose(d_b.F, ref_b, rtol=1e-7, atol=1e-10)

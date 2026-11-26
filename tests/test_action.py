@@ -21,6 +21,11 @@ These pin the revised object model, which has exactly two classes:
     structural or non-numeric.
   * **Terms declare what they sample.**  A pseudofermion term owns its own
     heatbath; everything it does not sample is evolved, and `dS` follows.
+  * **A base class may declare its roles.**  `roles = (...)` names the fields
+    outright, for a base class whose hooks are generic over them -- a library
+    pseudofermion, whose bosonic fields are its subclass's.  Hooks may then
+    take `**fields` and receive every role.  Without a declaration such a
+    class is an abstract base.
 
 Author hooks (`density`, `total`, `draw`, `gradient`) take fields as *roles*,
 by name.  The public API (`S_field`, `S`, `sample`, `dS`) takes and returns
@@ -799,10 +804,19 @@ def test_instantiating_a_term_without_density_or_total_raises():
         Quadratic()
 
 
-def test_a_variadic_hook_is_rejected():
+def test_a_positional_variadic_hook_is_rejected():
+    # Roles are keywords; `*fields` would receive them in no defined order.
     with pytest.raises(TypeError):
 
         class Bad(Term):
+            def density(self, *fields):
+                return fields[0] ** 2
+
+    with pytest.raises(TypeError):
+
+        class AlsoBad(Term):
+            roles = ("phi",)
+
             def density(self, *fields):
                 return fields[0] ** 2
 
@@ -854,6 +868,74 @@ def test_a_draw_returning_an_undeclared_role_raises(phi, key):
 
     with pytest.raises(ValueError):
         Action(Leaky()).sample({"phi": phi}, key)
+
+
+# --- declared roles: base classes with generic hooks --------------------------
+
+
+def _generic_base():
+    # A base whose hook is generic over its subclasses' fields.  Built in a
+    # function, not at module level, so that a failure here fails only these
+    # tests.
+    class SumOfSquares(Term):
+        a: float
+
+        def total(self, **fields):
+            return self.a * sum(jnp.sum(f.F**2) for f in fields.values())
+
+    return SumOfSquares
+
+
+def test_declared_roles_name_the_fields_of_generic_hooks(phi, chi):
+    class Pair(_generic_base()):
+        roles = ("phi", "chi")
+
+    t = Pair(a=2.0)
+    assert t.field_names == ("phi", "chi")
+    expected = 2.0 * (jnp.sum(phi.F**2) + jnp.sum(chi.F**2))
+    assert float(Action(t).S({"phi": phi, "chi": chi})) == pytest.approx(float(expected))
+
+
+def test_a_generic_hook_may_name_some_roles_explicitly(phi, chi):
+    class Weighted(Term):
+        roles = ("phi", "chi")
+
+        def total(self, phi, **rest):
+            return jnp.sum(phi.F) + 2 * sum(jnp.sum(f.F) for f in rest.values())
+
+    expected = jnp.sum(phi.F) + 2 * jnp.sum(chi.F)
+    assert float(Action(Weighted()).S({"phi": phi, "chi": chi})) == pytest.approx(
+        float(expected)
+    )
+
+
+def test_declared_roles_rebind_like_inferred_ones(phi, chi):
+    class Pair(_generic_base()):
+        roles = ("phi", "chi")
+
+    t = Pair(a=1.0).rebind(chi="psi")
+    assert t.field_names == ("phi", "psi")
+    assert float(Action(t).S({"phi": phi, "psi": chi})) == pytest.approx(
+        float(Action(Pair(a=1.0)).S({"phi": phi, "chi": chi}))
+    )
+
+
+def test_generic_hooks_without_declared_roles_make_an_abstract_base():
+    # Defining the base is fine -- subclasses declare the roles -- but it has
+    # no fields of its own to evaluate on.
+    Base = _generic_base()
+    with pytest.raises(TypeError):
+        Base(a=1.0)
+
+
+def test_a_hook_naming_an_undeclared_role_is_rejected():
+    with pytest.raises(TypeError):
+
+        class Bad(Term):
+            roles = ("phi",)
+
+            def total(self, phi, chi, **rest):
+                return jnp.sum(phi.F)
 
 
 # --- optional density, overridable gradient -----------------------------------
