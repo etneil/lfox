@@ -113,13 +113,11 @@ obtained by differentiating it.
 - **`lfox.evolution`** — `HMC` (a pure, jittable Markov transition kernel),
   `LeapfrogIntegrator` / `OmelyanIntegrator`, and `Chain`, the host-side driver that owns
   the RNG key, saved configurations, diagnostics, and observable measurement.
-- **`lfox.fermions`** — Dirac spin structure, the Wilson operator, and a minimal-residual
-  solver. **Experimental and currently non-functional** — this subpackage has not yet been
-  migrated to the current `LatticeField`, and importing it raises.
+- **`lfox.scalar`** - Scalar and O(N) field theory observables.
+- **`lfox.fermions`** — Dirac spin structure, the Wilson operator, and pseudofermions.
 
 ## Roadmap
 
-- Fermions!
 - Gauge fields!
 - Group/representation machinery
 - Other update algorithms
