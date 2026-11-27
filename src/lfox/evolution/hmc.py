@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from lfox.action import Action
 from lfox.evolution.base import Evolver
-from lfox.evolution.integrators import MDIntegrator
+from lfox.evolution.integrators import Integrator
 
 
 class HMC(Evolver):
@@ -18,14 +18,39 @@ class HMC(Evolver):
     # different transition kernel, not a flag on this one.  Build a warmup variant
     # with `as_warmup()`.
     #
+    # Each integrator level applies the force of the terms it names; every
+    # term must be on exactly one level (a lone level may name none, and then
+    # applies the whole action).
+    #
     # The monitor reports delta_H, P_acc and accept, plus the solver info of
     # every action evaluation in the trajectory, under flat keys
     # "<term>.<key>": S at the start, each force evaluation, then S at the
     # proposal, stacked in that order.
 
     action: Action = eqx.field(converter=Action)
-    integrator: MDIntegrator
+    integrator: Integrator
     warmup: bool = eqx.field(static=True, default=False)
+
+    def __check_init__(self):
+        levels = self.integrator.levels
+        if len(levels) == 1 and levels[0].terms is None:
+            return
+        if any(level.terms is None for level in levels):
+            raise ValueError(
+                "every level of a multi-level integrator must name its terms."
+            )
+
+        names = [t.name for t in self.action.terms]
+        assigned = [name for level in levels for name in level.terms]
+        unknown = sorted(set(assigned) - set(names))
+        twice = sorted({name for name in assigned if assigned.count(name) > 1})
+        missing = [name for name in names if name not in assigned]
+        if unknown or twice or missing:
+            raise ValueError(
+                "every term of the action must be on exactly one integrator "
+                f"level: unknown {unknown}, on more than one level {twice}, "
+                f"on none {missing}.  The action's terms are {names}."
+            )
 
     def as_warmup(self):
         return dataclasses.replace(self, warmup=True)
@@ -57,7 +82,7 @@ class HMC(Evolver):
     def momentum_refresh(self, fields, rng_key):
         # Gaussian momenta, one per evolved field.  Each is a field like the one
         # it moves -- same lattice, internal axes and boundary conditions -- so
-        # that X + eps P is well defined.
+        # that X + h P is well defined.
         pi_fields = {}
         for fname in self.action.evolved_fields:
             rng_key, subkey = jax.random.split(rng_key)
@@ -75,11 +100,20 @@ class HMC(Evolver):
         return delta_X
 
     def delta_mom(self):
-        def delta_P(X, P):
-            derivs, info = self.action.dS(X, wrt=tuple(P), info=True)
-            return {name: -derivs[name] for name in P}, info
+        # One force per integrator level, from the terms that level names.
+        def force(action):
+            def delta_P(X, P):
+                derivs, info = action.dS(X, wrt=tuple(P), info=True)
+                return {name: -derivs[name] for name in P}, info
 
-        return delta_P
+            return delta_P
+
+        def level_action(level):
+            if level.terms is None:
+                return self.action
+            return Action(*(self.action[name] for name in level.terms))
+
+        return tuple(force(level_action(level)) for level in self.integrator.levels)
 
     def MD_traj(self, fields, pi_fields):
         # Returns the proposal, delta_H, P_acc, and the solver info of the

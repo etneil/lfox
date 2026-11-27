@@ -2,8 +2,13 @@ from lfox.action import Action
 from lfox.evolution.base import Chain, Evolver
 from lfox.evolution.hmc import HMC
 from lfox.evolution.integrators import (
+    Integrator,
+    Leapfrog,
+    Leapfrog_QPQ,
     LeapfrogIntegrator,
-    MDIntegrator,
+    Level,
+    Omelyan,
+    Omelyan_QPQ,
     OmelyanIntegrator,
 )
 from lfox.evolution.multichain import MultiChain
@@ -14,7 +19,12 @@ __all__ = [
     "Evolver",
     "HMC",
     "LeapfrogIntegrator",
-    "MDIntegrator",
+    "Integrator",
+    "Leapfrog",
+    "Leapfrog_QPQ",
+    "Level",
+    "Omelyan",
+    "Omelyan_QPQ",
     "MultiChain",
     "OmelyanIntegrator",
 ]

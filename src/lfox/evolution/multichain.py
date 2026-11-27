@@ -50,7 +50,7 @@ class MultiChain(Chain):
     #   mc.column('mag')                 # (member, Monte Carlo time)
     #
     # Member i is Chain(evolvers[i], seeds[i], init_fields[i]), to round-off.
-    # The members may differ in any traced parameter (a coupling, eps), but
+    # The members may differ in any traced parameter (a coupling, tau), but
     # not in static structure (Nstep, the lattice).  Everything per member
     # carries a leading batch axis: `monitor[key][i]`, `column(name)[i]`,
     # `acceptance()[i]`, and the stacked `fields` and `field_chain` entries.
