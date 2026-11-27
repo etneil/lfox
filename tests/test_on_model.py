@@ -107,7 +107,7 @@ def test_uniform_field_action():
 
 def test_on_detailed_balance():
     # Metropolis requires <exp(-dH)> = 1; +-10%, as for the plain scalar.
-    hmc = HMC(action=ACTION, integrator=LeapfrogIntegrator(eps=0.1, Nstep=10))
+    hmc = HMC(action=ACTION, integrator=LeapfrogIntegrator(tau=1.0, Nstep=10))
     fields, rng_key = {"phi": _vec(6)}, jax.random.PRNGKey(7)
     fields, _, rng_key = hmc.as_warmup().evolve_many(fields, rng_key, traj=100)
     _, monitor, _ = hmc.evolve_many(fields, rng_key, traj=500)
@@ -123,7 +123,7 @@ def test_free_on_hmc_samples_n_independent_free_fields():
     # kinetic term and the force for a vector field.
     n, kappa, V = 2, 0.1, np.prod(DIMS)
     action = Action(ScalarTerm(kappa=kappa, lamb=0.0))
-    hmc = HMC(action=action, integrator=LeapfrogIntegrator(eps=0.2, Nstep=5))
+    hmc = HMC(action=action, integrator=LeapfrogIntegrator(tau=1.0, Nstep=5))
     chain = Chain(
         evolver=hmc,
         seed=8,

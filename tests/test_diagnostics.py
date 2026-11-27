@@ -15,7 +15,8 @@ before the implementation.  The design is in `fermions_design.md`
     actions with nonlocal (total-only) terms -- which a pseudofermion term is.
   * **The HMC monitor** gets every solve of a trajectory, in order, under flat
     keys `"<term>.<key>"`: the evaluation of S at the start, each force
-    evaluation (Nstep for leapfrog, 2 Nstep for Omelyan), and the evaluation
+    evaluation (Nstep + 1 for leapfrog, 2 Nstep + 1 for Omelyan, which reuse
+    the force between steps; see `test_integrators.py`), and the evaluation
     of S at the proposed end.  So each key has length n_force + 2 per
     trajectory, and `evolve_many` stacks it to (traj, n_force + 2).  Reporting
     changes nothing about the trajectory itself.
@@ -189,9 +190,9 @@ def test_a_hand_written_gradient_may_report_info():
     assert jnp.allclose(grads["phi"].F, 2.0 * phi.F)
     assert float(info["HandForce"]["norm2"]) == pytest.approx(float(jnp.sum(phi.F**2)))
 
-    hmc = HMC(action=HandForce(m2=1.0), integrator=LeapfrogIntegrator(eps=0.1, Nstep=3))
+    hmc = HMC(action=HandForce(m2=1.0), integrator=LeapfrogIntegrator(tau=0.3, Nstep=3))
     _, monitor, _ = hmc.evolve({"phi": phi}, jax.random.PRNGKey(15))
-    assert monitor["HandForce.norm2"].shape == (5,)
+    assert monitor["HandForce.norm2"].shape == (6,)
 
 
 # --- HMC ----------------------------------------------------------------------
@@ -199,7 +200,7 @@ def test_a_hand_written_gradient_may_report_info():
 
 @pytest.mark.parametrize(
     "integrator, n_force",
-    [(LeapfrogIntegrator(eps=0.1, Nstep=4), 4), (OmelyanIntegrator(eps=0.1, Nstep=4), 8)],
+    [(LeapfrogIntegrator(tau=0.4, Nstep=4), 5), (OmelyanIntegrator(tau=0.4, Nstep=4), 9)],
     ids=["leapfrog", "omelyan"],
 )
 def test_monitor_has_every_solve_of_a_trajectory(integrator, n_force):
@@ -219,45 +220,31 @@ def test_monitor_order_is_start_forces_end():
     # The first entry is S at the starting configuration, the last is S at the
     # proposal (a warmup kernel always accepts, so that is what it returns).
     phi = _phi(4)
-    hmc = HMC(action=Probe(m2=1.0), integrator=LeapfrogIntegrator(eps=0.1, Nstep=5))
+    hmc = HMC(action=Probe(m2=1.0), integrator=LeapfrogIntegrator(tau=0.5, Nstep=5))
     fields, monitor, _ = hmc.as_warmup().evolve({"phi": phi}, jax.random.PRNGKey(5))
 
     norm2 = np.asarray(monitor["Probe.norm2"])
-    assert norm2.shape == (7,)
+    assert norm2.shape == (8,)
     assert norm2[0] == pytest.approx(float(jnp.sum(phi.F**2)))
     assert norm2[-1] == pytest.approx(float(jnp.sum(fields["phi"].F ** 2)))
 
 
 def test_actions_without_info_keep_the_monitor_as_it_was():
-    hmc = HMC(action=Mass(m2=1.0), integrator=LeapfrogIntegrator(eps=0.1, Nstep=5))
+    hmc = HMC(action=Mass(m2=1.0), integrator=LeapfrogIntegrator(tau=0.5, Nstep=5))
     _, monitor, _ = hmc.evolve({"phi": _phi(6)}, jax.random.PRNGKey(7))
     assert set(monitor) == MONITOR
 
 
 def test_hmc_runs_an_action_with_a_nonlocal_term():
-    hmc = HMC(action=Mass(m2=1.0) + ZeroMode(h=0.5), integrator=LeapfrogIntegrator(eps=0.1, Nstep=5))
+    hmc = HMC(action=Mass(m2=1.0) + ZeroMode(h=0.5), integrator=LeapfrogIntegrator(tau=0.5, Nstep=5))
     fields, monitor, _ = hmc.evolve_many({"phi": _phi(8)}, jax.random.PRNGKey(9), traj=5)
     assert jnp.all(jnp.isfinite(fields["phi"].F))
     assert np.all(np.isfinite(np.asarray(monitor["delta_H"])))
 
 
-@pytest.mark.parametrize("Integrator", [LeapfrogIntegrator, OmelyanIntegrator])
-def test_Nstep_is_static_and_takes_any_integer(Integrator):
-    # Static, since the monitor's shape depends on it.  A numpy integer (from
-    # looping over np.array([...])) is converted, not stored as an array;
-    # a non-integer is refused rather than truncated.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        integrator = Integrator(eps=0.1, Nstep=np.int64(5))
-    assert type(integrator.Nstep) is int
-
-    with pytest.raises(TypeError):
-        Integrator(eps=0.1, Nstep=2.5)
-
-
 def test_reporting_info_does_not_change_the_trajectory():
     # Probe is Mass written as a total that reports: same key, same chain.
-    integrator = LeapfrogIntegrator(eps=0.1, Nstep=5)
+    integrator = LeapfrogIntegrator(tau=0.5, Nstep=5)
     phi, key = _phi(10), jax.random.PRNGKey(11)
     a, mon_a, _ = HMC(action=Mass(m2=1.0), integrator=integrator).evolve_many({"phi": phi}, key, traj=4)
     b, mon_b, _ = HMC(action=Probe(m2=1.0), integrator=integrator).evolve_many({"phi": phi}, key, traj=4)
@@ -271,7 +258,7 @@ def test_reporting_info_does_not_change_the_trajectory():
 
 
 def _chain(maxiter=1000):
-    hmc = HMC(action=Gaussian(m2=0.5, maxiter=maxiter), integrator=LeapfrogIntegrator(eps=0.1, Nstep=4))
+    hmc = HMC(action=Gaussian(m2=0.5, maxiter=maxiter), integrator=LeapfrogIntegrator(tau=0.4, Nstep=4))
     return Chain(evolver=hmc, seed=12, init_fields={"phi": _phi(13)})
 
 
@@ -280,7 +267,7 @@ def test_chain_records_solver_info():
     chain.run(3)
     iterations = chain.monitor["Gaussian.iterations"]
     assert len(iterations) == 3
-    assert all(len(row) == 6 for row in iterations)
+    assert all(len(row) == 7 for row in iterations)
 
 
 def test_chain_warns_when_a_solve_does_not_converge():

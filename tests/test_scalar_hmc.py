@@ -38,7 +38,7 @@ def test_force_matches_exact(scalar_action, lat4, scalar_params):
 def test_hmc_single_step_monitor_keys(scalar_action, lat4, phi4):
     hmc = HMC(
         action=scalar_action,
-        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=10),
     )
     _, monitor, _ = hmc.evolve({'phi': phi4}, jax.random.PRNGKey(42))
     assert {'delta_H', 'P_acc', 'accept'} <= monitor.keys()
@@ -47,7 +47,7 @@ def test_hmc_single_step_monitor_keys(scalar_action, lat4, phi4):
 def test_hmc_single_step_finite(scalar_action, lat4, phi4):
     hmc = HMC(
         action=scalar_action,
-        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=10),
     )
     _, monitor, _ = hmc.evolve({'phi': phi4}, jax.random.PRNGKey(7))
     assert jnp.isfinite(monitor['delta_H'])
@@ -57,7 +57,7 @@ def test_hmc_single_step_finite(scalar_action, lat4, phi4):
 def test_hmc_omelyan_finite(scalar_action, lat4, phi4):
     hmc = HMC(
         action=scalar_action,
-        integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
+        integrator=OmelyanIntegrator(tau=1.0, Nstep=10),
     )
     new_fields, monitor, _ = hmc.evolve({'phi': phi4}, jax.random.PRNGKey(99))
     assert jnp.isfinite(monitor['delta_H'])
@@ -71,7 +71,7 @@ def test_hmc_evolve_advances_rng_key(scalar_action, phi4):
     # key nor the momentum subkey.
     hmc = HMC(
         action=scalar_action,
-        integrator=LeapfrogIntegrator(eps=0.1, Nstep=5),
+        integrator=LeapfrogIntegrator(tau=0.5, Nstep=5),
     )
     rng_key = jax.random.PRNGKey(11)
     _, _, new_key = hmc.evolve({'phi': phi4}, rng_key)
@@ -87,7 +87,7 @@ def test_hmc_warmup_always_accepts(scalar_action, phi4):
     # A warmup kernel skips the accept/reject step entirely.
     hmc = HMC(
         action=scalar_action,
-        integrator=LeapfrogIntegrator(eps=0.5, Nstep=5),  # coarse: forces rejections
+        integrator=LeapfrogIntegrator(tau=2.5, Nstep=5),  # coarse: forces rejections
     )
     _, monitor, _ = hmc.as_warmup().evolve_many(
         {'phi': phi4}, jax.random.PRNGKey(5), traj=20
@@ -103,7 +103,7 @@ def test_hmc_monitor_is_stacked_per_trajectory(scalar_action, phi4):
     # evolve_many stacks whatever monitor the kernel returns, with dtypes intact.
     hmc = HMC(
         action=scalar_action,
-        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=10),
     )
     _, monitor, _ = hmc.evolve_many({'phi': phi4}, jax.random.PRNGKey(3), traj=7)
 
@@ -121,7 +121,7 @@ def test_hmc_detailed_balance():
     action = Action(ScalarTerm(kappa=0.18, lamb=1.145))
     hmc = HMC(
         action=action,
-        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=10),
     )
 
     fields = {'phi': phi}
@@ -152,10 +152,10 @@ def _on_field(key, bc=(1, 1), N=3):
     return lat.LatticeField(lattice=L2, F=F, axes={"a": N}, bc=bc)
 
 
-def _on_hmc(eps=0.1, Nstep=10):
+def _on_hmc(tau=1.0, Nstep=10):
     return HMC(
         action=ScalarTerm(kappa=0.1, lamb=0.5),  # O(N) for a field with axes
-        integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
+        integrator=LeapfrogIntegrator(tau=tau, Nstep=Nstep),
     )
 
 
@@ -173,7 +173,7 @@ def test_momenta_are_fields_like_the_fields_they_move(bc):
 
 
 def test_momenta_for_a_plain_scalar_are_fields_too(phi4, scalar_action):
-    hmc = HMC(action=scalar_action, integrator=LeapfrogIntegrator(eps=0.1, Nstep=10))
+    hmc = HMC(action=scalar_action, integrator=LeapfrogIntegrator(tau=1.0, Nstep=10))
     pi, _ = hmc.momentum_refresh({"phi": phi4}, jax.random.PRNGKey(1))
     assert isinstance(pi["phi"], lat.LatticeField)
     assert pi["phi"].axes == ()
@@ -216,7 +216,7 @@ def test_md_energy_violation_shrinks_as_eps_squared(bc):
     pi, _ = _on_hmc().momentum_refresh({"phi": phi}, jax.random.PRNGKey(7))
 
     dH = [
-        abs(float(_on_hmc(eps, n).MD_traj({"phi": phi}, pi)[2]))
-        for eps, n in [(0.1, 10), (0.05, 20)]
+        abs(float(_on_hmc(1.0, n).MD_traj({"phi": phi}, pi)[2]))
+        for n in (10, 20)
     ]
     assert 3.0 < dH[0] / dH[1] < 5.0, dH

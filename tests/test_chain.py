@@ -11,7 +11,7 @@ from lfox.evolution import HMC, Chain, LeapfrogIntegrator
 def hmc(scalar_action):
     return HMC(
         action=scalar_action,
-        integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=10),
     )
 
 
@@ -257,7 +257,7 @@ def test_chain_is_reproducible_from_seed(hmc, phi4):
 def test_chain_blocking_does_not_change_the_markov_chain(scalar_action, phi4):
     # Stepping in blocks of save_freq must produce the same chain as stepping one
     # trajectory at a time -- the block size is a performance knob, not physics.
-    hmc = HMC(action=scalar_action, integrator=LeapfrogIntegrator(eps=0.1, Nstep=10))
+    hmc = HMC(action=scalar_action, integrator=LeapfrogIntegrator(tau=1.0, Nstep=10))
 
     fine = Chain(evolver=hmc, seed=3, init_fields={'phi': phi4}, save_freq=1)
     coarse = Chain(evolver=hmc, seed=3, init_fields={'phi': phi4}, save_freq=4)

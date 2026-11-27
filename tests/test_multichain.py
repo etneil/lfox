@@ -2,7 +2,7 @@
 
 `MultiChain` runs a batch of independent Markov chains in lockstep, as one
 vmapped computation.  The members may differ in any traced parameter -- a
-coupling, the step size `eps` -- for a parameter scan, or only in their seeds,
+coupling, the trajectory length `tau` -- for a parameter scan, or only in their seeds,
 for replica streams at one parameter set.
 
   * **Construction**: `MultiChain(evolvers, seeds, init_fields, measure=None,
@@ -49,21 +49,21 @@ from lfox.linalg import cg
 from tests.phi4 import ScalarTerm
 
 KAPPAS = (0.15, 0.18, 0.21)
-EPS = (0.1, 0.08, 0.12)
+TAUS = (0.5, 0.4, 0.6)
 SEEDS = (11, 12, 13)
 B = len(KAPPAS)
 
 
-def _hmc(kappa=0.18, eps=0.1, Nstep=5):
+def _hmc(kappa=0.18, tau=0.5, Nstep=5):
     return HMC(
         action=Action(ScalarTerm(kappa=kappa, lamb=1.3282)),
-        integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
+        integrator=LeapfrogIntegrator(tau=tau, Nstep=Nstep),
     )
 
 
 @pytest.fixture
 def evolvers():
-    return [_hmc(kappa=k, eps=e) for k, e in zip(KAPPAS, EPS)]
+    return [_hmc(kappa=k, tau=t) for k, t in zip(KAPPAS, TAUS)]
 
 
 def mag(fields, action):
@@ -159,7 +159,7 @@ def _standalone(evolver, seed, init_fields, **kwargs):
 
 
 def test_each_member_is_the_chain_it_would_be_alone(evolvers, lat4):
-    # The central guarantee.  Members differ in kappa, eps, seed and start.
+    # The central guarantee.  Members differ in kappa, tau, seed and start.
     starts = [{'phi': _random_phi(lat4, i)} for i in range(B)]
     kwargs = dict(measure=[mag, (profile, 2)], save_freq=3)
 
@@ -354,7 +354,7 @@ class Gaussian(Term):
 
 
 def _gaussian_hmc(**kwargs):
-    return HMC(action=Gaussian(**kwargs), integrator=LeapfrogIntegrator(eps=0.1, Nstep=3))
+    return HMC(action=Gaussian(**kwargs), integrator=LeapfrogIntegrator(tau=0.3, Nstep=3))
 
 
 def _phi2():
@@ -369,7 +369,7 @@ def test_solver_iterations_are_counted_per_member():
     mc.run(2)
 
     iters = np.asarray(mc.monitor['Gaussian.iterations'])
-    assert iters.shape == (2, 2, 5)  # (member, traj, solves per traj)
+    assert iters.shape == (2, 2, 6)  # (member, traj, solves per traj)
     assert iters[0].mean() > iters[1].mean()  # the light mass is the slow one
     for i in range(2):
         alone = Chain(evolver=evolvers[i], seed=(1, 2)[i], init_fields=_phi2())
