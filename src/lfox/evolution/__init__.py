@@ -6,6 +6,7 @@ from lfox.evolution.integrators import (
     MDIntegrator,
     OmelyanIntegrator,
 )
+from lfox.evolution.multichain import MultiChain
 
 __all__ = [
     "Action",
@@ -14,5 +15,6 @@ __all__ = [
     "HMC",
     "LeapfrogIntegrator",
     "MDIntegrator",
+    "MultiChain",
     "OmelyanIntegrator",
 ]

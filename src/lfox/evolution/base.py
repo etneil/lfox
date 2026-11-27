@@ -109,7 +109,7 @@ class Chain:
     def __init__(self, evolver, seed, init_fields, measure=None, save_freq=1):
         self.evolver = evolver
         self.seed = seed
-        self.rng_key = jax.random.PRNGKey(seed)
+        self.rng_key = self._rng_key(seed)
         self.fields = dict(init_fields)
         self.save_freq = save_freq
 
@@ -127,7 +127,7 @@ class Chain:
         self.measure = []
         self.column_shapes = {}
         for fn, freq in _normalize_measure(measure):
-            out = jax.eval_shape(fn, self.fields, evolver.action)
+            out = jax.eval_shape(fn, *self._one_member())
             if not isinstance(out, dict):
                 raise TypeError(
                     f"measurement function {getattr(fn, '__name__', fn)} must "
@@ -140,7 +140,7 @@ class Chain:
                         "measurement function."
                     )
                 self.column_shapes[name] = value.shape
-            self.measure.append((jax.jit(fn), freq))
+            self.measure.append((self._compile(fn), freq))
 
         self.traj = 0
         self.warmup_traj = 0
@@ -151,6 +151,21 @@ class Chain:
         self.monitor = {}
         self.measurements = {name: [] for name in self.column_shapes}
         self.measurement_traj = {name: [] for name in self.column_shapes}
+
+    # The batch hooks: what MultiChain overrides to run many chains as one.
+
+    def _one_member(self):
+        # (fields, action) of one chain, to learn what a measurement returns.
+        return self.fields, self.evolver.action
+
+    def _rng_key(self, seed):
+        return jax.random.PRNGKey(seed)
+
+    def _compile(self, fn):
+        return jax.jit(fn)
+
+    def _evolve_many(self, evolver, ntraj):
+        return evolver.evolve_many(self.fields, self.rng_key, ntraj)
 
     @property
     def N_fields(self):
@@ -202,9 +217,7 @@ class Chain:
         # Thermalize.  Diagnostics are recorded; configurations and measurements
         # are not, since a warmup kernel does not sample the target distribution.
         evolver = self.evolver.as_warmup()
-        self.fields, monitor, self.rng_key = evolver.evolve_many(
-            self.fields, self.rng_key, ntraj
-        )
+        self.fields, monitor, self.rng_key = self._evolve_many(evolver, ntraj)
         self.warmup_traj += ntraj
         self._record_monitor(monitor)
 
@@ -219,9 +232,7 @@ class Chain:
             )
 
         for _ in range(ntraj // block):
-            self.fields, monitor, self.rng_key = self.evolver.evolve_many(
-                self.fields, self.rng_key, block
-            )
+            self.fields, monitor, self.rng_key = self._evolve_many(self.evolver, block)
             self.traj += block
             self._record_monitor(monitor)
             self._record_step()
