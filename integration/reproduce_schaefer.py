@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from lfox.evolution import HMC, Chain, LeapfrogIntegrator, OmelyanIntegrator
+from lfox.evolution import HMC, Chain, MultiChain, LeapfrogIntegrator, OmelyanIntegrator
 from lfox.action import Action, Term
 import lfox.scalar.observables as sc_obs
 import lfox.stats as lstats
@@ -259,7 +259,7 @@ plt.ylabel('$<m^2>$')
 plt.legend()
 
 # %% [markdown]
-# Finally the big physics result, figure 2.5!  I'll use the Chain() interface here.
+# Finally the big physics result, figure 2.5!  I'll use the MultiChain() interface here.
 
 # %%
 from tqdm import tqdm
@@ -280,33 +280,33 @@ for L in tqdm(all_L):
     Lat = lat.SquareLattice(st_dims=((L,)*d))
     phi_L = lat.LatticeField(lattice=Lat, F=1)
 
-    for (i, k) in enumerate(all_kappa):
-        Sk = Action(ScalarAction(kappa=k, lamb=1.1689))
-        hmc = HMC(
-            action=Sk,
-            integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
+    hmc_list = []
+    for k in all_kappa:
+        hmc_list.append(
+            HMC(
+                action=Action(ScalarAction(kappa=k, lamb=1.1689)),
+                integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
+            )
         )
-
-        chain = Chain(
-            evolver=hmc,
-            seed=58105 + 1000*L + i,
+        
+    mc = MultiChain(
+            evolvers=hmc_list,
+            seeds=[58105 + 1000*L + i for i in range(len(all_kappa))],
             init_fields={'phi': phi_L},
-#            observables={'mag': (sc_obs.magnetization, 100)},
             measure=[mag],
-            save_freq = 1000
+            save_freq=1000
         )
 
-        chain.warmup(100)
-        chain.run(20000)
+    mc.warmup(100)
+    mc.run(20000)
 
-        #raw_mag = np.abs(np.array(chain.obs_chain['mag'])[:,0])/L**d
-        mag_k[L].append(gv.dataset.avg_data(np.abs(chain.column('mag'))))
+    mag_k[L] = mc.column('mag')
 
 
 # %%
-plt.plot(all_kappa, gv.mean(mag_k[6]), ls=' ', marker='x')
-plt.plot(all_kappa, gv.mean(mag_k[8]), ls=' ', marker='o', color='red')
-plt.plot(all_kappa, gv.mean(mag_k[10]), ls=' ', marker='^', color='green')
+plt.plot(all_kappa, gv.mean(gv.dataset.avg_data(abs(mag_k[6]).T)), ls=' ', marker='x')
+plt.plot(all_kappa, gv.mean(gv.dataset.avg_data(abs(mag_k[8]).T)), ls=' ', marker='o', color='red')
+plt.plot(all_kappa, gv.mean(gv.dataset.avg_data(abs(mag_k[10]).T)), ls=' ', marker='^', color='green')
 
 plt.xlim(0.15, 0.22)
 
