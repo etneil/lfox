@@ -52,7 +52,8 @@ import lfox.stats as lstats
 import jax
 import jax.numpy as jnp
 import numpy as np
-from lfox.evolution import HMC, Chain, LeapfrogIntegrator, OmelyanIntegrator
+from lfox.evolution import HMC, Chain
+from lfox.evolution.integrators import Integrator, Omelyan, Level
 from lfox.linalg import dagger, cg, dense
 
 
@@ -149,7 +150,10 @@ S = ScalarAction(J=1, lamb=1) + YukawaFermion(g=0.5, m=1)
 
 hmc_test = HMC(
     action = S,
-    integrator = LeapfrogIntegrator(eps=1/10, Nstep=10),
+    integrator = Integrator(tau=1.0, levels=[
+        Level(Omelyan, Nstep=4, terms=('YukawaFermion')),
+        Level(Omelyan, Nstep=6, terms=('ScalarAction')),
+    ])
 )
 
 def scalar_meas(fields, action):
@@ -203,7 +207,10 @@ S = ScalarAction(J=1, lamb=1) + ExactFermion(g=0.5, m=1)
 
 hmc_test = HMC(
     action = S,
-    integrator = LeapfrogIntegrator(eps=1/10, Nstep=10),
+    integrator = Integrator(tau=1.0, levels=[
+        Level(Omelyan, Nstep=4, terms=('ExactFermion')),
+        Level(Omelyan, Nstep=6, terms=('ScalarAction')),
+    ])
 )
 
 def scalar_meas(fields, action):

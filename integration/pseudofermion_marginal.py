@@ -168,8 +168,8 @@ observables = {
 }
 
 
-def run(eps, Nstep, seed):
-    hmc = HMC(action=action, integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep))
+def run(Nstep, seed, tau=1.0):
+    hmc = HMC(action=action, integrator=LeapfrogIntegrator(tau=tau, Nstep=Nstep))
     chain = Chain(
         evolver=hmc,
         seed=seed,
@@ -196,8 +196,8 @@ def binned(samples, nbin=NBIN):
 # %%
 # %%time
 regimes = {
-    "typical": run(eps=0.15, Nstep=7, seed=1),
-    "coarse": run(eps=0.30, Nstep=5, seed=2),
+    "typical": run(tau=1.0, Nstep=7, seed=1),
+    "coarse": run(tau=1.5, Nstep=5, seed=2),
 }
 
 

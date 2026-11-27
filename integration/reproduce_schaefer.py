@@ -68,14 +68,14 @@ all_eps = 1/all_Nstep
 all_dH_leap = []
 all_dH_om = []
 
-for eps, Nstep in zip(all_eps, all_Nstep):
+for Nstep in all_Nstep:
     hmc_leap = HMC(
         action = S,
-        integrator = LeapfrogIntegrator(eps=eps, Nstep=Nstep),
+        integrator = LeapfrogIntegrator(tau=1, Nstep=Nstep),
     )
     hmc_om = HMC(
         action = S,
-        integrator = OmelyanIntegrator(eps=eps, Nstep=Nstep),
+        integrator = OmelyanIntegrator(tau=1, Nstep=Nstep),
     )
 
     F4 = {'phi': phi4}
@@ -138,11 +138,11 @@ all_eps = 1/all_Nstep
 all_acc_rate = []
 rng_key = jax.random.PRNGKey(11134)
 
-for eps, Nstep in zip(all_eps, all_Nstep):
+for Nstep in all_Nstep:
     F6 = {'phi': phi6}
     hmc = HMC(
         action=S,
-        integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=Nstep),
     )
 
     acc_rate = []
@@ -171,7 +171,7 @@ plt.ylabel('$1/\\epsilon/$ acc rate [cost]')
 # %%time
 hmc = HMC(
     action=Action(ScalarAction(kappa=0.18, lamb=1.145)),
-    integrator=LeapfrogIntegrator(eps=0.1, Nstep=10),
+    integrator=LeapfrogIntegrator(tau=1.0, Nstep=10),
 )
 
 Ftest = {'phi': phi6}
@@ -208,7 +208,7 @@ d = 3
 Lat6 = lat.SquareLattice(st_dims=((6,)*d))
 phi6 = lat.LatticeField(lattice=Lat6, F=1)
 
-all_Nstep = np.array([4,5,6,7,8,10])
+all_Nstep = np.array([5,6,7,8,10])
 
 # Try tau = 2
 all_eps = 1/all_Nstep
@@ -222,15 +222,15 @@ rng_key = jax.random.PRNGKey(73645)
 F6_HMC = {'phi': phi6}
 F6_HMD = {'phi': phi6}
 
-for eps, Nstep in zip(all_eps, all_Nstep):
-    print(eps, Nstep)
+for Nstep in all_Nstep:
+    print(Nstep)
 
     raw_m2_HMC = []
     raw_m2_HMD = []
     
     hmc = HMC(
         action=Action(ScalarAction(kappa=0.185825, lamb=1.1689)),
-        integrator=LeapfrogIntegrator(eps=eps, Nstep=Nstep),
+        integrator=LeapfrogIntegrator(tau=1.0, Nstep=Nstep),
     )
     
     for t in range(1000):
@@ -285,7 +285,7 @@ for L in tqdm(all_L):
         hmc_list.append(
             HMC(
                 action=Action(ScalarAction(kappa=k, lamb=1.1689)),
-                integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
+                integrator=OmelyanIntegrator(tau=1, Nstep=10),
             )
         )
         
@@ -323,7 +323,7 @@ rng_key = jax.random.PRNGKey(21245)
 
 hmc = HMC(
     action=Action(ScalarAction(kappa=0.185825, lamb=1.1689)),
-    integrator=OmelyanIntegrator(eps=0.1, Nstep=10),
+    integrator=OmelyanIntegrator(tau=1.0, Nstep=10),
 )
 
 chain = Chain(

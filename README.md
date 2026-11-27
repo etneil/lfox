@@ -85,7 +85,7 @@ lattice = lat.SquareLattice(st_dims=(4, 4, 4))
 phi = lat.LatticeField(lattice=lattice, F=jnp.ones((4, 4, 4)))
 
 action = Action(Phi4(kappa=0.18169, lamb=1.3282))
-hmc = HMC(action=action, integrator=LeapfrogIntegrator(eps=0.1, Nstep=10))
+hmc = HMC(action=action, integrator=LeapfrogIntegrator(tau=1.0, Nstep=10))
 
 chain = Chain(
     evolver=hmc,
@@ -110,9 +110,10 @@ obtained by differentiating it.
 - **`lfox.action`** — `Action`, the action functional, built from `Term`s. Subclass `Term`
   and implement `density`; you get `S`, `S_field`, and autodiff `dS` for free. Terms and
   actions compose with `+`.
-- **`lfox.evolution`** — `HMC` (a pure, jittable Markov transition kernel),
-  `LeapfrogIntegrator` / `OmelyanIntegrator`, and `Chain`, the host-side driver that owns
-  the RNG key, saved configurations, diagnostics, and observable measurement.
+- **`lfox.evolution`** — `HMC` (a pure, jittable Markov transition kernel), `Integrator` with
+  support for multi-level integration schemes and out of the box Leapfrog and Omelyan levels,
+  `Chain` as a driver for Monte Carlo evolution with monitoring and observable measurements, and 
+  `MultiChain` to vectorize over `Chain` for applications like phase diagram scans.
 - **`lfox.scalar`** - Scalar and O(N) field theory observables.
 - **`lfox.fermions`** — Dirac spin structure, the Wilson operator, and pseudofermions.
 
@@ -135,9 +136,9 @@ uv run pytest
 
 The test suite pins physics invariants rather than implementation details: action
 normalization, autodiff force against the analytic force, `<exp(-ΔH)> = 1`, RNG key
-threading, and `Chain` bookkeeping.
+threading, `Chain` bookkeeping, integrator reversibility and accuracy, and much more.
 
-Exploratory work lives in Jupyter notebooks at the repo root, paired to `py:percent`
+Integration tests live in Jupyter notebooks in the `integration/` directory, paired to `py:percent`
 scripts via [jupytext](https://jupytext.readthedocs.io/). Launch with `uv run jupyter lab`.
 
 ## License
